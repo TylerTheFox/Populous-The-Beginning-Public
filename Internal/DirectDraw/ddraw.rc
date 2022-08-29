@@ -1,0 +1,37 @@
+#define str(s) #s
+#define ver_str(a,b,c,d) str(a) "." str(b) "." str(c) "." str(d)
+
+#define VERSION_MAJOR    1
+#define VERSION_MINOR    3
+#define VERSION_BUILD    4
+#define VERSION_REVISION 6  
+
+#define VERSION          VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD, VERSION_REVISION
+#define VERSION_STRING   ver_str(VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD, VERSION_REVISION)
+
+1 VERSIONINFO
+FILEVERSION VERSION
+PRODUCTVERSION VERSION
+{
+    BLOCK "StringFileInfo"
+    {
+        BLOCK "040904B0"
+        {
+            VALUE "CompanyName", "cncnet.org"
+            VALUE "FileDescription", "DirectDraw replacement"
+            VALUE "FileVersion", VERSION_STRING
+            VALUE "InternalName", "ddraw"
+            VALUE "LegalCopyright", "Copyright (c) 2010-2019"
+            VALUE "LegalTrademarks", ""
+            VALUE "OriginalFileName", "ddraw.dll"
+            VALUE "ProductName", "cnc-ddraw"
+            VALUE "ProductVersion", VERSION_STRING
+            VALUE "Comments", "https://cncnet.org"
+        }
+    }
+
+    BLOCK "VarFileInfo"
+    {
+        VALUE "Translation",  0x0409, 0x04B0
+    }
+}

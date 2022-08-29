@@ -1,0 +1,18 @@
+LIBRARY     ddraw.dll
+
+EXPORTS
+    DirectDrawCreate                     @1
+    DirectDrawEnumerateA                 @2
+    getD3dDev                            @3
+    getDDraw                             @4
+    setPoptbCallback                     @5
+    getWindowRect                        @6
+    setPoptbDx9Init                      @7
+    setPoptbDx9Deinit                    @8
+    poptb_getOpenGLRenderer              @9
+    poptb_getDirectXRenderer             @10
+    poptb_getFullscreen                  @11
+    GameHandlesClose                     DATA
+    NvOptimusEnablement                  DATA
+    AmdPowerXpressRequestHighPerformance DATA
+    pvBmpBits                            DATA

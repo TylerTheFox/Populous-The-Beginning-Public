@@ -1,0 +1,135 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Headers">
+      <UniqueIdentifier>{d933f490-e0ad-4eb8-9e84-7377acbd068b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source">
+      <UniqueIdentifier>{e19bfd6f-273c-458e-b927-23857a40e0b5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Headers\Exceptions">
+      <UniqueIdentifier>{839f5c90-50e9-4f93-b5af-5ab7d714c993}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source\EASTL">
+      <UniqueIdentifier>{a587ee29-4034-4a48-abee-b9544983b8d4}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\Pop3App.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Build.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Compress.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Debug.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Draw.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Input.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Keys.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Lib.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Math.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Network.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Point.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Size.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Sound.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Types.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Assert.h">
+      <Filter>Headers\Exceptions</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Error.h">
+      <Filter>Headers\Exceptions</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3MajorFault.h">
+      <Filter>Headers\Exceptions</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Script.h">
+      <Filter>Headers\Exceptions</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3NetworkUDP.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Pop3App.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Compress.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Debug.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Input.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Math.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Network.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Point.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Size.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Sound.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3NetworkUDP.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\allocator_eastl.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\assert.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\fixed_pool.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\hashtable.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\intrusive_list.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\numeric_limits.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\red_black_tree.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\string.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\thread_support.cpp">
+      <Filter>Source\EASTL</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
