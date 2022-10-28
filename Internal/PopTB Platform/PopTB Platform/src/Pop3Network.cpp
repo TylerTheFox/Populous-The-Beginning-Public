@@ -707,8 +707,11 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         ProcessChat(&buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::POP_SCRIPT:
-        // We don't care about popscript atm.
-        //ProcessScript(&buffer[2], buf_size - 2);
+		if (GamePtrs.Script_Callback)
+		{
+			std::string data(&buffer[2]);
+			GamePtrs.Script_Callback(data);
+		}
         break;
     case Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER:
         filetransfer_client_process_fileheader(peer_address, peer_port, &buffer[2]);
