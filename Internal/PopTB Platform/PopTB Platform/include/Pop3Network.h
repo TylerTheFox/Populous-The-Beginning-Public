@@ -48,7 +48,6 @@ enum class Pop3NetworkTypes
     HOST_DELETE_PLAYER,
     POP_DATA,
     POP_CHAT,
-    POP_SCRIPT,
     HOST_READY_FOR_FILE_TRANSFER,
     CLIENT_READY_FOR_FILE_TRANSFER,
     HOST_SEND_FILE_PART,
@@ -122,7 +121,6 @@ struct POP3NETWORK_GAMEDATA
     UBYTE*          GameMode;
     ULONG*          NetMyPlayerNumber;
     UBYTE*          NetLobbied;
-    std::function<void(std::string&)> Script_Callback;
     std::function<void(void)>   FileTransfer_Callback;
 };
 
@@ -255,7 +253,6 @@ public:
     // Data managment Functions.
     int                                             SendData(DWORD to_id, void* dataPtr, DWORD size);
     int                                             SendChat(BYTE chat_targets, const UNICODE_CHAR* message);
-    int                                             SendScriptData(const std::string & data);
     void                                            DestroySession();
 
     // Misc Functions.

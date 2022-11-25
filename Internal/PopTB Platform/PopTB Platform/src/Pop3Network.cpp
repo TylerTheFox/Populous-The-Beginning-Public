@@ -143,21 +143,6 @@ int Pop3Network::SendChat(BYTE chat_targets, const UNICODE_CHAR * message)
     return TRUE;
 }
 
-int Pop3Network::SendScriptData(const std::string & data)
-{
-    static char buf[MAX_PACKET_SIZE];
-    int len = static_cast<int>(data.size());
-
-    if (len < MAX_PACKET_SIZE)
-    {
-        memcpy(&buf[0], reinterpret_cast<const char*>(data.c_str()), len);
-    }
-    else memcpy(&buf[0], reinterpret_cast<const char*>(data.c_str()), MAX_PACKET_SIZE);
-
-    Send(NET_ALLPLAYERS, Pop3NetworkTypes::POP_SCRIPT, buf, len);
-    return 0;
-}
-
 void Pop3Network::DestroySession()
 {
     Pop3Debug::trace("Player %d is quitting as %d", player_num, am_host);
@@ -705,10 +690,6 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
 
     case Pop3NetworkTypes::POP_CHAT:
         ProcessChat(&buffer[2], buf_size - 2);
-        break;
-    case Pop3NetworkTypes::POP_SCRIPT:
-        // We don't care about popscript atm.
-        //ProcessScript(&buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER:
         filetransfer_client_process_fileheader(peer_address, peer_port, &buffer[2]);
