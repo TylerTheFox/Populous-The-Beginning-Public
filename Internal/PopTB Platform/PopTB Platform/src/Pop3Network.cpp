@@ -374,7 +374,7 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
         (buffer[0] == MAJOR_VERSION && buffer[1] == MINOR_VERSION && version.s == BUILD_NUMBER))
     {
         Pop3Debug::trace("NET_HOST_ACCEPT_JOIN");
-        Send(peer_address, peer_port, Pop3NetworkTypes::HOST_ACCECPT_JOIN);
+        Send(peer_address, peer_port, Pop3NetworkTypes::HOST_ACCEPT_JOIN);
     }
     else
     {
@@ -658,7 +658,7 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         remove_player_impl(from_id);
         break;
 
-    case Pop3NetworkTypes::HOST_ACCECPT_JOIN:
+    case Pop3NetworkTypes::HOST_ACCEPT_JOIN:
         player_num = DATA_NOT_SET;
         SendMyInfo(peer_address, peer_port);
         break;
