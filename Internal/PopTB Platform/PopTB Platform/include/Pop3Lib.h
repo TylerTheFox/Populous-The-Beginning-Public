@@ -14,6 +14,6 @@
 #include "Pop3Size.h"
 #include "Pop3Point.h"
 #include "Pop3App.h"
-#include "Pop3App.h"
+#include "Pop3Draw.h"
 #include "Pop3NetworkUDP.h"
 #include "Pop3Sound.h"

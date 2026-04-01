@@ -2,6 +2,11 @@
 
 #include <Windows.h>
 #include <string>
+
+// String literal pass-through used by Library8 assertion macros.
+#ifndef _LBSTR
+#define _LBSTR(x) x
+#endif
 typedef char                CHAR;
 typedef short               SHORT;
 typedef long                LONG;
@@ -174,12 +179,12 @@ typedef UWORD ThingNum;
 #ifdef _LB_LIBRARY
 #define LB_API(ret) LB_EXTERNTYPE ret LB_CALLTYPE
 #define LB_API_CLASS(classname) class classname
-#define LB_API_VAR_IMPORT	extern
+#define extern	extern
 #define LB_API_VAR_EXPORT
 #else
 #define LB_API(ret) LB_EXTERNTYPE ret LB_CALLTYPE
 #define LB_API_CLASS(classname) class classname
-#define LB_API_VAR_IMPORT	extern
+#define extern	extern
 #define LB_API_VAR_EXPORT
 #endif
 //#endif

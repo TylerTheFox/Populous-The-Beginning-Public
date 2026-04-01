@@ -30,6 +30,40 @@
     <ClInclude Include="include\Pop3Size.h" />
     <ClInclude Include="include\Pop3Sound.h" />
     <ClInclude Include="include\Pop3Types.h" />
+    <!-- Uplifted from Library8 -->
+    <ClInclude Include="include\Bullfrog2.h" />
+    <ClInclude Include="include\LbColour.h" />
+    <ClInclude Include="include\LbCoord.h" />
+    <ClInclude Include="include\LbDraw.h" />
+    <ClInclude Include="include\LbError.h" />
+    <ClInclude Include="include\LbException.h" />
+    <ClInclude Include="include\LbLib.h" />
+    <ClInclude Include="include\LbLists.h" />
+    <ClInclude Include="include\LbMacro.h" />
+    <ClInclude Include="include\LbPal.h" />
+    <ClInclude Include="include\LbRect.h" />
+    <ClInclude Include="include\LbRendef.h" />
+    <ClInclude Include="include\LbRender.h" />
+    <ClInclude Include="include\LbSCBack.h" />
+    <ClInclude Include="include\LbScreen.h" />
+    <ClInclude Include="include\LbSprite.h" />
+    <ClInclude Include="include\LbSpriteRender.h" />
+    <ClInclude Include="include\LbSurface.h" />
+    <ClInclude Include="include\LbText.h" />
+    <ClInclude Include="include\TbPixelCaps.h" />
+    <ClInclude Include="include\TbPixFmt.h" />
+    <ClInclude Include="include\TbPoint.h" />
+    <ClInclude Include="include\TbRect.h" />
+    <ClInclude Include="include\TbRenderArea.h" />
+    <ClInclude Include="include\TbScreenMode.h" />
+    <ClInclude Include="include\TbSize.h" />
+    <ClInclude Include="include\Pop3PixelCaps.h" />
+    <ClInclude Include="include\Pop3PixFmt.h" />
+    <ClInclude Include="include\Pop3Rect.h" />
+    <ClInclude Include="include\Pop3RenderArea.h" />
+    <ClInclude Include="include\Pop3ScreenMode.h" />
+    <ClInclude Include="include\_drawdef.h" />
+    <ClInclude Include="include\lblib2.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\allocator_eastl.cpp" />
@@ -42,6 +76,7 @@
     <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\string.cpp" />
     <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\thread_support.cpp" />
     <ClCompile Include="src\Pop3App.cpp" />
+    <ClCompile Include="src\Pop3Draw.cpp" />
     <ClCompile Include="src\Pop3Compress.cpp" />
     <ClCompile Include="src\Pop3Debug.cpp" />
     <ClCompile Include="src\Pop3Input.cpp" />
@@ -51,11 +86,103 @@
     <ClCompile Include="src\Pop3Point.cpp" />
     <ClCompile Include="src\Pop3Size.cpp" />
     <ClCompile Include="src\Pop3Sound.cpp" />
+    <!-- Uplifted from Library8 -->
+    <ClCompile Include="src\LbAppData.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbColour.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbDraw.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbDrawBackend.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbLists.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbPal.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbRect.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbRenderContexts.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;4189;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbSCBack.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbScreen.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbSprite.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbSpriteRender.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;4244;4189;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbSurface.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\LbText.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\TbPixFmt.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\TbPixelCaps.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\TbRect.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\TbRenderArea.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\Pop3PixFmt.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\Pop3PixelCaps.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Rect.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="src\Pop3RenderArea.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DisableSpecificWarnings>4201;4099;4100;4239;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\LbRendef_impl.inl" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{FA522012-A49D-4DFD-AC3E-332E414978E4}</ProjectGuid>
     <RootNamespace>PopTBPlatform</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.18362.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -96,7 +223,7 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Public\Internal\DirectDraw\inc;$(ProjectDir)\..\..\..\External\SFML-2.5.1\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -109,6 +236,8 @@
       <DisableSpecificWarnings>
       </DisableSpecificWarnings>
       <ExceptionHandling>Async</ExceptionHandling>
+      <BrowseInformation>true</BrowseInformation>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Lib>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
@@ -123,6 +252,9 @@
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
     </ProjectReference>
+    <Bscmake>
+      <PreserveSbr>true</PreserveSbr>
+    </Bscmake>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -131,7 +263,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Public\Internal\DirectDraw\inc;$(ProjectDir)\..\..\..\External\SFML-2.5.1\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -143,6 +275,7 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <DisableSpecificWarnings>
       </DisableSpecificWarnings>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>

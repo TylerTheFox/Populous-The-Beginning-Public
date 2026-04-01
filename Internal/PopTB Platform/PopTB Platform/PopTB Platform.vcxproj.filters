@@ -72,6 +72,105 @@
     <ClInclude Include="include\Pop3NetworkUDP.h">
       <Filter>Headers</Filter>
     </ClInclude>
+    <ClInclude Include="include\TbSize.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TbScreenMode.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TbRenderArea.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TbRect.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TbPoint.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TbPixFmt.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TbPixelCaps.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3PixelCaps.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3PixFmt.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3Rect.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3RenderArea.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Pop3ScreenMode.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbText.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbSurface.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbSpriteRender.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbSprite.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbScreen.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbSCBack.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbRender.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbRendef.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbRect.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbPal.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbMacro.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbLists.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\lblib2.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbLib.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbException.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbError.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbDraw.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbCoord.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LbColour.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Bullfrog2.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\_drawdef.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Pop3App.cpp">
@@ -131,5 +230,79 @@
     <ClCompile Include="..\..\..\External\EASTL\Packages\EAsrc\EAsrc\thread_support.cpp">
       <Filter>Source\EASTL</Filter>
     </ClCompile>
+    <ClCompile Include="src\Pop3Draw.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbAppData.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbColour.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbDraw.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbDrawBackend.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbLists.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbPal.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbRect.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbRenderContexts.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbSCBack.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbScreen.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbSprite.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbSpriteRender.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbSurface.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\LbText.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TbPixelCaps.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TbPixFmt.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TbRect.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TbRenderArea.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3PixFmt.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3PixelCaps.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3Rect.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Pop3RenderArea.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\LbRendef_impl.inl">
+      <Filter>Source</Filter>
+    </None>
   </ItemGroup>
 </Project>
