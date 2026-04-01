@@ -4,10 +4,10 @@
 #include <Pop3Rect.h>
 #include    <LbScreen.h>
 #include    <LbSCBack.h>
+#include    <Pop3Screen.h>
 #include    <windows.h>
 
 // Forward declarations for external functions (defined in Library8/src)
-extern void LbSurface_RegisterDirectDraw(IDirectDraw *pDirectDraw);
 extern void LbSurface_Unlock(TbSurface *surface);
 extern TbError LbSurface_ClearRect(const TbSurface *surface, const Pop3Rect *rect, TbColour colour, ULONG flags);
 
@@ -28,14 +28,9 @@ TbSurface _lbFrontSurface;
 //***************************************************************************
 // Internal globals
 //***************************************************************************
-static TbSurface _lbFlipSurface;
-IDirectDraw* _lbpDirectDraw;
-IDirectDrawPalette* _lbpPalette;
-IDirectDrawClipper* _lbpClipper;
 int _LbWindowActive;
 int _LbScreenActive;
 int _lbIsScreenInitialised;
-_GUID* _LbScreenDDGUID;
 int _LbModeXScreen;
 int _lbUsingSimulator;
 int _lbWillUseSimulator = 1;
@@ -46,7 +41,6 @@ static TbList _lbDisplayModeList;
 static TbList _lbModeEnumList;
 static HWND _lbhWndMain;
 static HWND _lbhWndCreated;
-static HMODULE _lbhDDrawDll;
 static char _lbWindowClassName[128];
 
 // FadePalette static state
@@ -58,14 +52,10 @@ static int gFadeCount;
 // Internal helper forward declarations
 //***************************************************************************
 static int ReleaseMode();
-static void ReleaseDirectDraw();
-static int CreateDirectDrawObject(_GUID* guid, IDirectDraw** ppDD, HMODULE* phDll);
-static int CreateScreenModeList(int modex, HWND hwnd, _GUID* guid);
+static int CreateScreenModeList();
 static void RegisterBullfrogWindowClass();
 static LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-static HRESULT WINAPI EnumModesCallback(LPDDSURFACEDESC lpDDSurfaceDesc, LPVOID lpContext);
 static void _InitialiseSurface(TbSurface* surface, UINT width, UINT height, UINT depth, ULONG flags);
-static BOOL _CheckAndRestoreSurface(const TbSurface* surface);
 
 //***************************************************************************
 // Internal helper implementations
@@ -76,8 +66,7 @@ static void _InitialiseSurface(TbSurface* surface, UINT width, UINT height, UINT
     surface->DrawFlags = 0;
     surface->GhostTable = 0;
     surface->FadeTable = 0;
-    surface->SurfaceArea.mpData = NULL;
-    surface->SurfaceArea.mPitch = 0;
+    surface->SurfaceArea.mPitch = width * (depth / 8);
     surface->SurfaceArea.mSize.Width = width;
     surface->SurfaceArea.mSize.Height = height;
     surface->SurfaceArea.mFormat.Depth = depth;
@@ -91,45 +80,7 @@ static void _InitialiseSurface(TbSurface* surface, UINT width, UINT height, UINT
     default: surface->SurfaceArea.mFormat = Pop3PixFormat8; break;
     }
 
-    // Query actual pixel format from DirectDraw surface
-    if (surface->lpSurface)
-    {
-        DDPIXELFORMAT ddpf;
-        memset(&ddpf, 0, sizeof(ddpf));
-        ddpf.dwSize = sizeof(ddpf);
-        if (surface->lpSurface->GetPixelFormat(&ddpf) == DD_OK)
-        {
-            surface->SurfaceArea.mFormat.Red = ddpf.dwRBitMask;
-            surface->SurfaceArea.mFormat.Green = ddpf.dwGBitMask;
-            surface->SurfaceArea.mFormat.Blue = ddpf.dwBBitMask;
-            surface->SurfaceArea.mFormat.Alpha = ddpf.dwRGBAlphaBitMask;
-            surface->SurfaceArea.mFormat.Depth = ddpf.dwRGBBitCount;
-            surface->SurfaceArea.mFormat.bPalette = (ddpf.dwFlags & DDPF_PALETTEINDEXED8) ? 1 : 0;
-        }
-
-        DDSURFACEDESC ddsd;
-        memset(&ddsd, 0, sizeof(ddsd));
-        ddsd.dwSize = sizeof(ddsd);
-        ddsd.dwFlags = DDSD_WIDTH | DDSD_HEIGHT | DDSD_PITCH;
-        surface->lpSurface->GetSurfaceDesc(&ddsd);
-        surface->SurfaceArea.mPitch = ddsd.lPitch;
-        surface->SurfaceArea.mSize.Width = ddsd.dwWidth;
-        surface->SurfaceArea.mSize.Height = ddsd.dwHeight;
-    }
-
     surface->CreationFlags = flags;
-}
-
-static BOOL _CheckAndRestoreSurface(const TbSurface* surface)
-{
-    if (!surface->lpSurface)
-        return FALSE;
-    if (surface->lpSurface->IsLost() == DDERR_SURFACELOST)
-    {
-        surface->lpSurface->Restore();
-        return TRUE;
-    }
-    return FALSE;
 }
 
 static int ReleaseMode()
@@ -137,146 +88,73 @@ static int ReleaseMode()
     _LbWindowActive = 0;
     _LbScreenActive = 0;
 
-    if (!_lbFrontSurface.lpSurface)
+    if (!_lbFrontSurface.SurfaceArea.mpData)
         return 0;
 
     _CBINFO cbInfo(_CBINFO::POINTER_RELEASE, (ULONG)0);
     _LbGCBS.EventNotification(LBCB_POINTER_CB_EVENT, &cbInfo);
 
-    if (_lbpDirectDraw)
-        _lbpDirectDraw->SetCooperativeLevel(_lbhWndMain, DDSCL_NORMAL);
-
-    if (_lbBackSurface.lpSurface)
+    // Free software-allocated surface memory
+    if (_lbBackSurface.SurfaceArea.mpData)
     {
-        _lbBackSurface.lpSurface->Release();
-        _lbBackSurface.lpSurface = NULL;
+        free(_lbBackSurface.SurfaceArea.mpData);
+        _lbBackSurface.SurfaceArea.mpData = NULL;
     }
 
-    if (_lbFlipSurface.lpSurface)
+    if (_lbFrontSurface.SurfaceArea.mpData)
     {
-        _lbFlipSurface.lpSurface->Release();
-        _lbFlipSurface.lpSurface = NULL;
-    }
-
-    if (_lbFrontSurface.lpSurface)
-    {
-        _lbFrontSurface.lpSurface->Release();
-        _lbFrontSurface.lpSurface = NULL;
-    }
-
-    if (_lbpPalette)
-    {
-        _lbpPalette->Release();
-        _lbpPalette = NULL;
-    }
-
-    if (_lbpClipper)
-    {
-        _lbpClipper->Release();
-        _lbpClipper = NULL;
+        free(_lbFrontSurface.SurfaceArea.mpData);
+        _lbFrontSurface.SurfaceArea.mpData = NULL;
     }
 
     return 0;
 }
 
-static void ReleaseDirectDraw()
+static int CreateScreenModeList()
 {
-    if (_lbpDirectDraw)
-    {
-        _lbpDirectDraw->RestoreDisplayMode();
-        _lbpDirectDraw->Release();
-        _lbpDirectDraw = NULL;
-        LbSurface_RegisterDirectDraw(NULL);
-    }
-    if (_lbhDDrawDll)
-    {
-        FreeLibrary(_lbhDDrawDll);
-        _lbhDDrawDll = NULL;
-    }
-}
-
-static int CreateDirectDrawObject(_GUID* guid, IDirectDraw** ppDD, HMODULE* phDll)
-{
-    HMODULE hDll;
-    if (_lbUsingSimulator)
-        hDll = LoadLibraryA("SIMULATOR.DLL");
-    else
-        hDll = LoadLibraryA("ddraw.dll");
-
-    if (!hDll)
-        return -1;
-
-    typedef HRESULT(WINAPI *LPDIRECTDRAWCREATEFN)(GUID*, LPDIRECTDRAW*, IUnknown*);
-    LPDIRECTDRAWCREATEFN pfnCreate = (LPDIRECTDRAWCREATEFN)GetProcAddress(hDll, "DirectDrawCreate");
-
-    if (!pfnCreate || pfnCreate(guid, ppDD, NULL) != DD_OK)
-    {
-        FreeLibrary(hDll);
-        return -1;
-    }
-
-    *phDll = hDll;
-    return 0;
-}
-
-static HRESULT WINAPI EnumModesCallback(LPDDSURFACEDESC lpDDSurfaceDesc, LPVOID lpContext)
-{
-    TbList* pList = (TbList*)lpContext;
-
-    _Pop3ScreenModeFind* pNode = new _Pop3ScreenModeFind;
-    if (!pNode)
-        return DDENUMRET_CANCEL;
-
-    pNode->Info.Width = lpDDSurfaceDesc->dwWidth;
-    pNode->Info.Height = lpDDSurfaceDesc->dwHeight;
-    pNode->Info.Depth = lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount;
-
-    LbList_Insert(pList, pList->lpLast, (TbListNode*)pNode);
-    return DDENUMRET_OK;
-}
-
-static int CreateScreenModeList(int modex, HWND hwnd, _GUID* guid)
-{
-    IDirectDraw* pDD = NULL;
-    HMODULE hDll = NULL;
-
-    if (CreateDirectDrawObject(guid, &pDD, &hDll))
-        return -1;
-
     LbList_Init(&_lbDisplayModeList);
 
-    if (modex)
+    DEVMODE dm;
+    memset(&dm, 0, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+
+    for (DWORD i = 0; EnumDisplaySettingsA(NULL, i, &dm); i++)
     {
-        HWND hWndTemp = hwnd;
-        if (!hWndTemp)
+        if (dm.dmBitsPerPel != 8 && dm.dmBitsPerPel != 16 && dm.dmBitsPerPel != 32)
+            continue;
+
+        // Check for duplicate
+        bool exists = false;
+        TbListNode* node = LbList_GetFirst(&_lbDisplayModeList);
+        while (node && !LbList_IsLast(node))
         {
-            RegisterBullfrogWindowClass();
-            HINSTANCE hInst = (HINSTANCE)LbApp_GetHInstance();
-            hWndTemp = CreateWindowExA(0, _lbWindowClassName, "",
-                WS_POPUP | WS_DISABLED, 0, 0, 1280, 1024,
-                NULL, NULL, hInst, NULL);
-            if (!hWndTemp)
+            _Pop3ScreenModeFind* entry = (_Pop3ScreenModeFind*)node;
+            if (entry->Info.Width == dm.dmPelsWidth &&
+                entry->Info.Height == dm.dmPelsHeight &&
+                entry->Info.Depth == dm.dmBitsPerPel)
             {
-                pDD->Release();
-                FreeLibrary(hDll);
-                return -1;
+                exists = true;
+                break;
+            }
+            node = LbList_GetNext(node);
+        }
+
+        if (!exists)
+        {
+            _Pop3ScreenModeFind* pNode = new _Pop3ScreenModeFind;
+            if (pNode)
+            {
+                pNode->Info.Width = dm.dmPelsWidth;
+                pNode->Info.Height = dm.dmPelsHeight;
+                pNode->Info.Depth = dm.dmBitsPerPel;
+                LbList_Insert(&_lbDisplayModeList, _lbDisplayModeList.lpLast, (TbListNode*)pNode);
             }
         }
 
-        pDD->SetCooperativeLevel(hWndTemp, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWMODEX);
-        pDD->EnumDisplayModes(0, NULL, &_lbDisplayModeList, EnumModesCallback);
-        pDD->SetCooperativeLevel(hWndTemp, DDSCL_NORMAL);
-
-        if (!hwnd)
-            DestroyWindow(hWndTemp);
-    }
-    else
-    {
-        pDD->EnumDisplayModes(0, NULL, &_lbDisplayModeList, EnumModesCallback);
+        memset(&dm, 0, sizeof(dm));
+        dm.dmSize = sizeof(dm);
     }
 
-    pDD->Release();
-    FreeLibrary(hDll);
     return 0;
 }
 
@@ -343,7 +221,7 @@ void LbScreen_Terminate(void)
     {
         _lbIsScreenInitialised = 0;
         ReleaseMode();
-        ReleaseDirectDraw();
+        Pop3Screen::destroy();
         if (_lbhWndCreated)
             DestroyWindow(_lbhWndCreated);
         _lbhWndCreated = NULL;
@@ -368,6 +246,18 @@ TbError LbScreen_Initialise(_GUID *pGuid, BOOL modex, void *hWndView, void *hWnd
     if (_lbIsScreenInitialised)
         return LB_OK;
 
+    // Prevent DWM from bitmap-stretching the window on high-DPI displays.
+    // Must be called before any window creation.
+    {
+        HMODULE hUser32 = GetModuleHandleA("user32.dll");
+        if (hUser32)
+        {
+            typedef BOOL(WINAPI* PFN_SetProcessDPIAware)(void);
+            PFN_SetProcessDPIAware fn = (PFN_SetProcessDPIAware)GetProcAddress(hUser32, "SetProcessDPIAware");
+            if (fn) fn();
+        }
+    }
+
     LbList_Init(&_lbModeEnumList);
 
     LbApp_SetHWnd(hWndView);
@@ -386,10 +276,9 @@ TbError LbScreen_Initialise(_GUID *pGuid, BOOL modex, void *hWndView, void *hWnd
         LbApp_SetHWnd(_lbhWndCreated);
     }
 
-    if (CreateScreenModeList(modex, (HWND)hWndApplication, pGuid))
+    if (CreateScreenModeList())
         return LB_ERROR;
 
-    _LbScreenDDGUID = pGuid;
     _lbIsScreenInitialised = 1;
     return LB_OK;
 }
@@ -397,22 +286,11 @@ TbError LbScreen_Initialise(_GUID *pGuid, BOOL modex, void *hWndView, void *hWnd
 void LbScreen_SetPaletteEntries(const TbPaletteEntry *lpPalette, UINT nFirst, UINT nEntries)
 {
     memcpy(&_lbGlobalPalette.Entry[nFirst], lpPalette, 4 * nEntries);
-
-    if (_lbpPalette && _lbFrontSurface.lpSurface)
-        _lbpPalette->SetEntries(0, nFirst, nEntries, (LPPALETTEENTRY)lpPalette);
 }
 
 TbPaletteEntry * LbScreen_GetPaletteEntries(TbPaletteEntry *palette, UINT first, UINT num)
 {
-    if (_lbpPalette)
-    {
-        if (_lbpPalette->GetEntries(0, first, num, (LPPALETTEENTRY)&_lbGlobalPalette.Entry[first]) == DD_OK)
-            memcpy(palette, &_lbGlobalPalette.Entry[first], 4 * num);
-    }
-    else
-    {
-        memcpy(palette, &_lbGlobalPalette.Entry[first], 4 * num);
-    }
+    memcpy(palette, &_lbGlobalPalette.Entry[first], 4 * num);
     return palette;
 }
 
@@ -439,17 +317,6 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     if (!LbScreen_IsModeAvailable(nWidth, nHeight, nDepth))
         return LB_ERROR;
 
-    if (!_lbpDirectDraw)
-    {
-        if (CreateDirectDrawObject(_LbScreenDDGUID, &_lbpDirectDraw, &_lbhDDrawDll))
-        {
-            ReleaseDirectDraw();
-            return LB_ERROR;
-        }
-    }
-
-    LbSurface_RegisterDirectDraw(_lbpDirectDraw);
-
     if (_lbhWndCreated)
         _lbhWndMain = _lbhWndCreated;
     else
@@ -466,46 +333,8 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     _LbWindowActive = 1;
     _LbScreenActive = 1;
 
-    // Set cooperative level
-    DWORD coopFlags;
-    if (flags & LB_SCREEN_MODE_WINDOWED)
-        coopFlags = DDSCL_NORMAL;
-    else
-        coopFlags = DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWMODEX;
-
-    if (_lbpDirectDraw->SetCooperativeLevel(_lbhWndMain, coopFlags) != DD_OK)
-    {
-        ReleaseDirectDraw();
-        return LB_ERROR;
-    }
-
-    // Create clipper for windowed mode
-    if (flags & LB_SCREEN_MODE_WINDOWED)
-    {
-        if (_lbpDirectDraw->CreateClipper(0, &_lbpClipper, NULL) != DD_OK)
-        {
-            ReleaseDirectDraw();
-            return LB_ERROR;
-        }
-        if (_lbpClipper->SetHWnd(0, _lbhWndMain) != DD_OK)
-        {
-            ReleaseDirectDraw();
-            return LB_ERROR;
-        }
-    }
-
     if (!_lbUsingSimulator)
         SetCursor(NULL);
-
-    // Set display mode for fullscreen
-    if (!(flags & LB_SCREEN_MODE_WINDOWED))
-    {
-        if (_lbpDirectDraw->SetDisplayMode(nWidth, nHeight, nDepth) != DD_OK)
-        {
-            ReleaseDirectDraw();
-            return LB_ERROR;
-        }
-    }
 
     // Setup palette
     if (lpPalette)
@@ -521,120 +350,70 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
         }
     }
 
-    if (nDepth == 8)
-    {
-        const TbPaletteEntry* palSrc = lpPalette ? lpPalette->Entry : _lbGlobalPalette.Entry;
-        if (_lbpDirectDraw->CreatePalette(DDPCAPS_8BIT | DDPCAPS_ALLOW256,
-            (LPPALETTEENTRY)palSrc, &_lbpPalette, NULL) != DD_OK)
-        {
-            ReleaseDirectDraw();
-            return LB_ERROR;
-        }
-    }
-    else
-    {
-        if (_lbpPalette)
-        {
-            _lbpPalette->Release();
-            _lbpPalette = NULL;
-        }
-    }
+    // Allocate software memory for front and back surfaces
+    UINT bytesPerPixel = nDepth / 8;
+    UINT pitch = nWidth * bytesPerPixel;
+    UINT bufSize = pitch * nHeight;
 
-    // Create primary surface
-    DDSURFACEDESC ddsd;
-    memset(&ddsd, 0, sizeof(ddsd));
-    ddsd.dwSize = sizeof(ddsd);
-    ddsd.dwFlags = DDSD_CAPS;
-    ddsd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
+    _lbFrontSurface.SurfaceArea.mpData = (UBYTE*)malloc(bufSize);
+    if (!_lbFrontSurface.SurfaceArea.mpData)
+        return LB_ERROR;
+    memset(_lbFrontSurface.SurfaceArea.mpData, 0, bufSize);
 
-    if (flags & LB_SCREEN_MODE_FLIP)
+    _lbBackSurface.SurfaceArea.mpData = (UBYTE*)malloc(bufSize);
+    if (!_lbBackSurface.SurfaceArea.mpData)
     {
-        ddsd.dwFlags |= DDSD_BACKBUFFERCOUNT;
-        ddsd.ddsCaps.dwCaps |= DDSCAPS_FLIP | DDSCAPS_COMPLEX;
-        ddsd.dwBackBufferCount = 1;
-    }
-
-    if (flags & LB_SCREEN_3D)
-        ddsd.ddsCaps.dwCaps |= DDSCAPS_3DDEVICE;
-
-    if (_lbpDirectDraw->CreateSurface(&ddsd, &_lbFrontSurface.lpSurface, NULL) != DD_OK)
-    {
-        _lbFrontSurface.lpSurface = NULL;
-        ReleaseDirectDraw();
+        free(_lbFrontSurface.SurfaceArea.mpData);
+        _lbFrontSurface.SurfaceArea.mpData = NULL;
         return LB_ERROR;
     }
+    memset(_lbBackSurface.SurfaceArea.mpData, 0, bufSize);
 
-    // Get surface desc to check for ModeX
-    _lbFrontSurface.lpSurface->GetSurfaceDesc(&ddsd);
-    _LbModeXScreen = ddsd.ddsCaps.dwCaps & DDSCAPS_MODEX;
+    _lbFrontSurface.lpSurface = NULL;
+    _lbBackSurface.lpSurface = NULL;
 
-    // If ModeX and swap mode, recreate with flip chain
-    if (_LbModeXScreen && (flags & LB_SCREEN_MODE_SWAP))
-    {
-        _lbFrontSurface.lpSurface->Release();
-        _lbFrontSurface.lpSurface = NULL;
-
-        memset(&ddsd, 0, sizeof(ddsd));
-        ddsd.dwSize = sizeof(ddsd);
-        ddsd.dwFlags = DDSD_CAPS | DDSD_BACKBUFFERCOUNT;
-        ddsd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE | DDSCAPS_FLIP | DDSCAPS_COMPLEX;
-        ddsd.dwBackBufferCount = 1;
-
-        if (_lbpDirectDraw->CreateSurface(&ddsd, &_lbFrontSurface.lpSurface, NULL) != DD_OK)
-        {
-            _lbFrontSurface.lpSurface = NULL;
-            ReleaseDirectDraw();
-            return LB_ERROR;
-        }
-
-        DDSCAPS caps;
-        caps.dwCaps = DDSCAPS_BACKBUFFER;
-        _lbFrontSurface.lpSurface->GetAttachedSurface(&caps, &_lbFlipSurface.lpSurface);
-    }
-
-    // Get or create back buffer
-    if (flags & LB_SCREEN_MODE_FLIP)
-    {
-        DDSCAPS caps;
-        caps.dwCaps = DDSCAPS_BACKBUFFER;
-        _lbFrontSurface.lpSurface->GetAttachedSurface(&caps, &_lbBackSurface.lpSurface);
-    }
-    else
-    {
-        memset(&ddsd, 0, sizeof(ddsd));
-        ddsd.dwSize = sizeof(ddsd);
-        ddsd.dwFlags = DDSD_CAPS | DDSD_WIDTH | DDSD_HEIGHT;
-        ddsd.dwWidth = nWidth;
-        ddsd.dwHeight = nHeight;
-        ddsd.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN | DDSCAPS_SYSTEMMEMORY;
-
-        if (flags & LB_SCREEN_3D)
-            ddsd.ddsCaps.dwCaps |= DDSCAPS_3DDEVICE;
-
-        _lbpDirectDraw->CreateSurface(&ddsd, &_lbBackSurface.lpSurface, NULL);
-    }
-
-    if (!_lbBackSurface.lpSurface)
-    {
-        if (_lbFrontSurface.lpSurface)
-        {
-            _lbFrontSurface.lpSurface->Release();
-            _lbFrontSurface.lpSurface = NULL;
-        }
-        ReleaseDirectDraw();
-        return LB_ERROR;
-    }
-
-    // Set clipper on front surface for windowed mode
-    if (flags & LB_SCREEN_MODE_WINDOWED)
-        _lbFrontSurface.lpSurface->SetClipper(_lbpClipper);
-
-    // Set palette on front surface
-    if (nDepth == 8 && _lbpPalette)
-        _lbFrontSurface.lpSurface->SetPalette(_lbpPalette);
+    _LbModeXScreen = 0;
 
     _InitialiseSurface(&_lbFrontSurface, nWidth, nHeight, nDepth, flags);
     _InitialiseSurface(&_lbBackSurface, nWidth, nHeight, nDepth, flags);
+
+    // Create D3D9 device via Pop3Screen (windowed mode by default)
+    bool windowed = (flags & LB_SCREEN_MODE_WINDOWED) != 0;
+
+    // Adjust window style for windowed vs fullscreen
+    if (windowed)
+    {
+        DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+        SetWindowLongA(_lbhWndMain, GWL_STYLE, style);
+
+        // Size the client area to match the game resolution
+        RECT rc = { 0, 0, (LONG)nWidth, (LONG)nHeight };
+        AdjustWindowRect(&rc, style, FALSE);
+        SetWindowPos(_lbhWndMain, HWND_TOP,
+            (GetSystemMetrics(SM_CXSCREEN) - (rc.right - rc.left)) / 2,
+            (GetSystemMetrics(SM_CYSCREEN) - (rc.bottom - rc.top)) / 2,
+            rc.right - rc.left, rc.bottom - rc.top,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+    else
+    {
+        DWORD style = WS_POPUP | WS_VISIBLE;
+        SetWindowLongA(_lbhWndMain, GWL_STYLE, style);
+        SetWindowPos(_lbhWndMain, HWND_TOP, 0, 0, nWidth, nHeight,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+
+    if (!Pop3Screen::isReady())
+    {
+        if (!Pop3Screen::create(_lbhWndMain, nWidth, nHeight, windowed))
+        {
+            free(_lbFrontSurface.SurfaceArea.mpData);
+            free(_lbBackSurface.SurfaceArea.mpData);
+            _lbFrontSurface.SurfaceArea.mpData = NULL;
+            _lbBackSurface.SurfaceArea.mpData = NULL;
+            return LB_ERROR;
+        }
+    }
 
     Pop3Size size;
     size.Width = nWidth;
@@ -648,59 +427,27 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
 
 TbError LbScreen_Swap(ULONG flags)
 {
-    ULONG waitFlag = flags ^ LB_SURFACE_SWAP_NOWAIT;
+    if (!_lbBackSurface.SurfaceArea.mpData || !_lbFrontSurface.SurfaceArea.mpData)
+        return LB_ERROR;
 
-    if (_lbFrontSurface.CreationFlags & LB_SCREEN_MODE_FLIP)
-    {
-        _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_FLIP, NULL);
-        HRESULT hr = _lbFrontSurface.lpSurface->Flip(_lbBackSurface.lpSurface, (waitFlag ? DDFLIP_WAIT : 0));
-        _LbGCBS.EventNotification(LBCB_SCREEN_END_FLIP, NULL);
+    _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_SWAP, NULL);
 
-        if (hr == DDERR_SURFACELOST)
-        {
-            _CheckAndRestoreSurface(&_lbFrontSurface);
-            _CheckAndRestoreSurface(&_lbBackSurface);
-        }
-        if (hr != DD_OK)
-            return LB_ERROR;
-        return LB_OK;
-    }
-    else
-    {
-        _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_SWAP, NULL);
-        HRESULT hr;
+    // Copy back surface → front surface (software blit)
+    UINT pitch = _lbBackSurface.SurfaceArea.mPitch;
+    UINT height = _lbBackSurface.SurfaceArea.mSize.Height;
+    memcpy(_lbFrontSurface.SurfaceArea.mpData, _lbBackSurface.SurfaceArea.mpData, pitch * height);
 
-        if (_lbFrontSurface.CreationFlags & LB_SCREEN_MODE_WINDOWED)
-        {
-            RECT rc;
-            HWND hWnd = (HWND)LbApp_GetHWnd();
-            GetWindowRect(hWnd, &rc);
-            hr = _lbFrontSurface.lpSurface->Blt(&rc, _lbBackSurface.lpSurface,
-                NULL, DDBLT_WAIT, NULL);
-        }
-        else if (_LbModeXScreen)
-        {
-            hr = _lbFlipSurface.lpSurface->BltFast(0, 0, _lbBackSurface.lpSurface,
-                NULL, DDBLTFAST_WAIT * waitFlag);
-            hr = _lbFrontSurface.lpSurface->Flip(_lbFlipSurface.lpSurface, (waitFlag ? DDFLIP_WAIT : 0));
-        }
-        else
-        {
-            hr = _lbFrontSurface.lpSurface->BltFast(0, 0, _lbBackSurface.lpSurface,
-                NULL, DDBLTFAST_WAIT * waitFlag);
-        }
+    // Present the front surface through D3D9
+    Pop3Screen::present(
+        _lbFrontSurface.SurfaceArea.mpData,
+        _lbFrontSurface.SurfaceArea.mPitch,
+        _lbFrontSurface.SurfaceArea.mSize.Width,
+        _lbFrontSurface.SurfaceArea.mSize.Height,
+        (const unsigned char*)&_lbGlobalPalette.Entry[0]);
 
-        _LbGCBS.EventNotification(LBCB_SCREEN_END_SWAP, NULL);
+    _LbGCBS.EventNotification(LBCB_SCREEN_END_SWAP, NULL);
 
-        if (hr == DDERR_SURFACELOST)
-        {
-            _CheckAndRestoreSurface(&_lbFrontSurface);
-            _CheckAndRestoreSurface(&_lbBackSurface);
-        }
-        if (hr != DD_OK)
-            return LB_ERROR;
-        return LB_OK;
-    }
+    return LB_OK;
 }
 
 void LbScreen_SwapClear(TbColour colour)
@@ -711,40 +458,34 @@ void LbScreen_SwapClear(TbColour colour)
 
 TbError LbScreen_PartSwap(const Pop3Point &destOffset, const Pop3Rect &srcRect, ULONG flags)
 {
-    if (!_lbFrontSurface.lpSurface)
+    if (!_lbFrontSurface.SurfaceArea.mpData || !_lbBackSurface.SurfaceArea.mpData)
         return LB_ERROR;
-
-    if (_lbFrontSurface.CreationFlags & LB_SCREEN_MODE_FLIP)
-        return LB_ERROR;
-    if (_lbFrontSurface.CreationFlags & LB_SCREEN_MODE_WINDOWED)
-        return LB_ERROR;
-    if (_LbModeXScreen)
-        return LB_ERROR;
-
-    ULONG waitFlag = flags ^ LB_SURFACE_SWAP_NOWAIT;
 
     _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_SWAP, NULL);
 
-    RECT rc;
-    rc.left = srcRect.Left;
-    rc.top = srcRect.Top;
-    rc.right = srcRect.Right;
-    rc.bottom = srcRect.Bottom;
+    UINT bytesPerPixel = _lbBackSurface.SurfaceArea.mFormat.Depth / 8;
+    UINT srcPitch = _lbBackSurface.SurfaceArea.mPitch;
+    UINT dstPitch = _lbFrontSurface.SurfaceArea.mPitch;
 
-    HRESULT hr = _lbFrontSurface.lpSurface->BltFast(
-        destOffset.X, destOffset.Y,
-        _lbBackSurface.lpSurface, &rc,
-        DDBLTFAST_WAIT * waitFlag);
+    int copyWidth = (srcRect.Right - srcRect.Left) * bytesPerPixel;
+    int copyHeight = srcRect.Bottom - srcRect.Top;
+
+    for (int y = 0; y < copyHeight; y++)
+    {
+        UBYTE* src = _lbBackSurface.SurfaceArea.mpData + (srcRect.Top + y) * srcPitch + srcRect.Left * bytesPerPixel;
+        UBYTE* dst = _lbFrontSurface.SurfaceArea.mpData + (destOffset.Y + y) * dstPitch + destOffset.X * bytesPerPixel;
+        memcpy(dst, src, copyWidth);
+    }
+
+    // Present the front surface through D3D9
+    Pop3Screen::present(
+        _lbFrontSurface.SurfaceArea.mpData,
+        _lbFrontSurface.SurfaceArea.mPitch,
+        _lbFrontSurface.SurfaceArea.mSize.Width,
+        _lbFrontSurface.SurfaceArea.mSize.Height,
+        (const unsigned char*)&_lbGlobalPalette.Entry[0]);
 
     _LbGCBS.EventNotification(LBCB_SCREEN_END_SWAP, NULL);
-
-    if (hr == DDERR_SURFACELOST)
-    {
-        _CheckAndRestoreSurface(&_lbFrontSurface);
-        _CheckAndRestoreSurface(&_lbBackSurface);
-    }
-    if (hr != DD_OK)
-        return LB_ERROR;
 
     return LB_OK;
 }
@@ -755,11 +496,15 @@ BOOL LbScreen_IsModeAvailable(UINT width, UINT height, UINT depth)
     Pop3ScreenModeFind modeFind;
     Pop3ScreenMode mode;
 
+    // The game renders at 8bpp internally but Pop3Screen converts to 32bpp.
+    // Modern hardware only enumerates 32bpp modes, so map 8/16 → 32.
+    UINT hwDepth = (depth <= 16) ? 32 : depth;
+
     if (LbScreen_ModeFindFirst(&modeFind, &mode) == LB_OK)
     {
         do
         {
-            if (mode.Width == width && mode.Height == height && mode.Depth == depth)
+            if (mode.Width == width && mode.Height == height && mode.Depth == hwDepth)
             {
                 found = TRUE;
                 break;
@@ -799,8 +544,7 @@ void LbScreen_ModeFindEnd(Pop3ScreenModeFind *lpScreenModeFind)
 
 void LbScreen_WaitVbi(void)
 {
-    if (_lbpDirectDraw)
-        _lbpDirectDraw->WaitForVerticalBlank(DDWAITVB_BLOCKBEGIN, NULL);
+    // D3D9 PresentationInterval handles vsync; this is now a no-op.
 }
 
 SINT LbScreen_FadePalette(TbPalette *lpPaletteTo, UINT nSteps, TbPaletteFadeType PaletteFadeType)

@@ -124,18 +124,13 @@ void Pop3Input::setMousePointer(const Pop3Point *pos)
     _mousePos.X = pos->X;
     _mousePos.Y = pos->Y;
 }
-typedef void(__stdcall *poptb_callback)(void);
-typedef DWORD(__stdcall *poptb_renderer)(void);
-typedef DWORD(WINAPI *ccdraw_renderer)(void);
 
-extern ccdraw_renderer poptb_directx_renderer;
 char Pop3Input::waitForKeyChar()
 {
     _waiting = true;
     EnterTextMode();
     while (_waiting)
     {
-        poptb_directx_renderer();
         Pop3App::ProcessWindowsMessages();
         Sleep(1); // Just wait.
     }
@@ -148,7 +143,6 @@ Pop3InputKey Pop3Input::waitForKeyLbKey()
     _waitingKey = true;
     while (_waitingKey)
     {
-        poptb_directx_renderer();
         Pop3App::ProcessWindowsMessages();
         Sleep(1); // Just wait.
     }

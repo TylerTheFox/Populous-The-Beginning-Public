@@ -171,6 +171,7 @@
     <ClInclude Include="include\_drawdef.h">
       <Filter>Headers</Filter>
     </ClInclude>
+    <ClInclude Include="include\Pop3Screen.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Pop3App.cpp">
@@ -299,6 +300,7 @@
     <ClCompile Include="src\Pop3RenderArea.cpp">
       <Filter>Source</Filter>
     </ClCompile>
+    <ClCompile Include="src\Pop3Screen.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="src\LbRendef_impl.inl">

@@ -1,6 +1,5 @@
 #include "Pop3Debug.h"
 #include <windows.h>
-#include <ddraw.h>
 #include <LbSurface.h>
 
 // Global list of registered surfaces (debug mode only, zeroed in release)
@@ -12,9 +11,9 @@ TbList _lbSurfaceList;
 // LbSurface_RegisterDirectDraw : Register DirectDraw device with the library
 // Called from LbScreen during initialisation.
 // -----------------------------------------------------------------------
-void LbSurface_RegisterDirectDraw(IDirectDraw *pDirectDraw)
+void LbSurface_RegisterDirectDraw(void *pDirectDraw)
 {
-    // No-op in this implementation: DirectDraw is managed by LbScreen
+    // No-op: DirectDraw is no longer used
 }
 
 // -----------------------------------------------------------------------
@@ -78,18 +77,7 @@ TbError LbSurface_Lock(TbSurface *surface, UBYTE **lplpSurfaceMem)
     if (!surface)
         return LB_ERROR;
 
-    if (surface->lpSurface)
-    {
-        DDSURFACEDESC ddsd;
-        memset(&ddsd, 0, sizeof(ddsd));
-        ddsd.dwSize = sizeof(ddsd);
-        HRESULT hr = surface->lpSurface->Lock(NULL, &ddsd, DDLOCK_WAIT, NULL);
-        if (hr != DD_OK)
-            return LB_ERROR;
-        surface->SurfaceArea.mpData  = (UBYTE*)ddsd.lpSurface;
-        surface->SurfaceArea.mPitch  = (UINT)ddsd.lPitch;
-    }
-
+    // All surfaces are now software memory — no DirectDraw locking required
     LbDraw_SetCurrent(surface);
     if (lplpSurfaceMem)
         *lplpSurfaceMem = surface->SurfaceArea.mpData;
@@ -101,9 +89,7 @@ TbError LbSurface_Lock(TbSurface *surface, UBYTE **lplpSurfaceMem)
 // -----------------------------------------------------------------------
 void LbSurface_Unlock(TbSurface *surface)
 {
-    if (surface && surface->lpSurface && surface->SurfaceArea.mpData)
-        surface->lpSurface->Unlock(surface->SurfaceArea.mpData);
-    // mpData is intentionally left set — callers may read it after Unlock (e.g. LbSurface_ClearRect)
+    // No-op: software surfaces don't require unlocking
 }
 
 // -----------------------------------------------------------------------
@@ -256,19 +242,6 @@ TbError LbSurface_ClearRect(const TbSurface *surface, const Pop3Rect *rect, TbCo
     UINT width   = surface->SurfaceArea.mSize.Width;
     UINT height  = surface->SurfaceArea.mSize.Height;
 
-    bool locked = false;
-    if (!data && surface->lpSurface)
-    {
-        DDSURFACEDESC ddsd;
-        memset(&ddsd, 0, sizeof(ddsd));
-        ddsd.dwSize = sizeof(ddsd);
-        if (surface->lpSurface->Lock(NULL, &ddsd, DDLOCK_WAIT, NULL) != DD_OK)
-            return LB_ERROR;
-        data   = (UBYTE*)ddsd.lpSurface;
-        pitch  = (UINT)ddsd.lPitch;
-        locked = true;
-    }
-
     if (!data)
         return LB_ERROR;
 
@@ -286,9 +259,6 @@ TbError LbSurface_ClearRect(const TbSurface *surface, const Pop3Rect *rect, TbCo
     UBYTE idx = colour.Index;
     for (UINT y = y0; y < y1; ++y)
         memset(data + y * pitch + x0, idx, x1 - x0);
-
-    if (locked)
-        surface->lpSurface->Unlock(data);
 
     return LB_OK;
 }
@@ -336,12 +306,4 @@ TbError LbSurface_Blt(const TbSurface *destS, UINT x, UINT y, const TbSurface *s
     return LB_ERROR;
 }
 
-// -----------------------------------------------------------------------
-// LbSurface_GetDDSurface : Returns the underlying IDirectDrawSurface pointer.
-// -----------------------------------------------------------------------
-IDirectDrawSurface * LbSurface_GetDDSurface(TbSurface *pSurface)
-{
-    if (!pSurface)
-        return NULL;
-    return pSurface->lpSurface;
-}
+

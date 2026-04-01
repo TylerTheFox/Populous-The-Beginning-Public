@@ -10,7 +10,7 @@
 
 #ifndef _LB_LIBRARY
 #ifndef _LB_DEBUG
-#pragma comment(lib, "DDraw.lib")
+// D3D9 link is handled by Pop3Screen.cpp
 #endif
 #endif
 
@@ -41,12 +41,6 @@ typedef struct TbSurface
         fLocked=FALSE;
 #endif
     }
-
-    // Returns directdraw surface associated with surface
-    struct IDirectDrawSurface *GetDDSurface()
-    {
-        return lpSurface;
-    };
 
     // Get the surface renderarea
     const Pop3RenderArea& GetRenderArea()
@@ -94,7 +88,7 @@ typedef struct TbSurface
 
     BOOL			bExternal;		// is this surface owned by the library surface system
 
-    struct IDirectDrawSurface *lpSurface; // Corresponding direct draw surface
+    void *lpSurface; // Legacy — kept for struct layout (always NULL)
 
 public:
 
@@ -111,10 +105,7 @@ extern TbList _lbSurfaceList; // Debug surface validation
 // Register surface
 //***************************************************************************
 #if defined(_LB_WINDOWS)
-struct IDirectDraw;
-struct IDirectDrawSurface;
-void LbSurface_RegisterDirectDraw( IDirectDraw *pDirectDraw);
-TbError LbSurface_RegisterDirectDrawSurface(IDirectDrawSurface *pDirectDrawSurface, TbSurface *surface);
+void LbSurface_RegisterDirectDraw(void *pDirectDraw);
 #endif
 
 //***************************************************************************
@@ -273,11 +264,6 @@ void LbSurface_DebugFrameRate(TbSurface *lpSurface);
 //	LbSurface_MapToRenderArea
 //***************************************************************************
 Pop3RenderArea *LbSurface_MapToRenderArea(Pop3RenderArea &ra, TbSurface *surface);
-
-//
-//	Return the direct draw surface ptr
-//
-IDirectDrawSurface * LbSurface_GetDDSurface(TbSurface *pSurface);
 
 
 
