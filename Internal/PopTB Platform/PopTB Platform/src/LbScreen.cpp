@@ -386,12 +386,20 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
         DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
         SetWindowLongA(_lbhWndMain, GWL_STYLE, style);
 
-        // Size the client area to match the game resolution
-        RECT rc = { 0, 0, (LONG)nWidth, (LONG)nHeight };
+        // Scale the window up so the game isn't tiny on modern monitors.
+        // Find the largest integer scale that fits comfortably on screen.
+        int deskW = GetSystemMetrics(SM_CXSCREEN);
+        int deskH = GetSystemMetrics(SM_CYSCREEN);
+        int scale = 1;
+        while ((int)nWidth * (scale + 1) <= deskW * 9 / 10 &&
+               (int)nHeight * (scale + 1) <= deskH * 9 / 10)
+            scale++;
+
+        RECT rc = { 0, 0, (LONG)(nWidth * scale), (LONG)(nHeight * scale) };
         AdjustWindowRect(&rc, style, FALSE);
         SetWindowPos(_lbhWndMain, HWND_TOP,
-            (GetSystemMetrics(SM_CXSCREEN) - (rc.right - rc.left)) / 2,
-            (GetSystemMetrics(SM_CYSCREEN) - (rc.bottom - rc.top)) / 2,
+            (deskW - (rc.right - rc.left)) / 2,
+            (deskH - (rc.bottom - rc.top)) / 2,
             rc.right - rc.left, rc.bottom - rc.top,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
     }
