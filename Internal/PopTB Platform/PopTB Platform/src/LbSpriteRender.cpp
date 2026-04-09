@@ -1414,11 +1414,11 @@ static TbError LbSpriteDrawScalingDown(UBYTE *outbuf, int scanline, int outheigh
 							} else if constexpr (Blend == SprBlend::Remap) {
 								*out_end = table[(unsigned char)*sprdata];
 							} else if constexpr (Blend == SprBlend::Trans1) {
-								unsigned int pxmap = ((*sprdata) << 8);
+								unsigned int pxmap = ((unsigned char)(*sprdata) << 8);
 								pxmap = (pxmap & ~0x00ff) | ((*out_end));
 								*out_end = table[pxmap];
 							} else { // Trans2
-								unsigned int pxmap = ((*sprdata));
+								unsigned int pxmap = ((unsigned char)(*sprdata));
 								pxmap = (pxmap & ~0xff00) | ((*out_end) << 8);
 								*out_end = table[pxmap];
 							}
@@ -1613,9 +1613,9 @@ static TbError LbSpriteDrawScalingUp(UBYTE *outbuf, int scanline, int outheight,
 								{
 									unsigned int pxmap;
 									if constexpr (Blend == SprBlend::Trans1)
-										pxmap = ((*sprdata) << 8);
+										pxmap = ((unsigned char)(*sprdata) << 8);
 									else
-										pxmap = ((*sprdata));
+										pxmap = ((unsigned char)(*sprdata));
 									for (; xdup > 0; xdup--)
 									{
 										if constexpr (Blend == SprBlend::Trans1)
