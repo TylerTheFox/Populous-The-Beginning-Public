@@ -2,7 +2,7 @@
 #include <iostream>
 #include <string>
 #include <assert.h>
-#include <Windows.h>
+#include "Pop3Platform_Win32.h"
 #include <SDL.h>
 #include "Pop3App.h"
 #include "Poco/File.h"

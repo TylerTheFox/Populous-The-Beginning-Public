@@ -4,7 +4,7 @@
 #include <Pop3Rect.h>
 #include    <LbScreen.h>
 #include    <LbSCBack.h>
-#include    <windows.h>
+#include    "Pop3Platform_Win32.h"
 
 // Forward declarations for external functions (defined in Library8/src)
 extern void LbSurface_RegisterDirectDraw(IDirectDraw *pDirectDraw);

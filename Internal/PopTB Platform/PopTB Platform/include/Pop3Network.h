@@ -13,7 +13,7 @@
 extern Poco::Mutex packet_info_mu;
 
 // These are the callback types.
-#define	NET_CALLBACK	__stdcall
+#define	NET_CALLBACK	POP3_CALLBACK
 typedef void (NET_CALLBACK *NetworkServicesCallbackProc)(void* connection, UNICODE_CHAR* lpDriverDescription, GUID* guiddatatype, DWORD noguiddatatypes, void* param);
 typedef void (NET_CALLBACK *NetworkDataCallbackProc)(DWORD from_id, void* dataPtr, DWORD dataSize, DWORD messageType, const void* param);
 typedef void (NET_CALLBACK *NetworkLobbyApplicationsCallback)(void* dataPtr, void* param);

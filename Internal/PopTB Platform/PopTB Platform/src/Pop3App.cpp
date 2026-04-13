@@ -1,26 +1,27 @@
+#include "Pop3Platform_Win32.h"
 #include "Pop3App.h"
 #include "Pop3Debug.h"
 #include "SDL.h"
 #include "SDL_syswm.h"
 
 #ifdef _WIN32
-HINSTANCE    Pop3App::_hinst                        = nullptr;
-HWND         Pop3App::_hwnd                         = nullptr;
-poptb_callback* Pop3App::_deviceLost                = nullptr;
+Pop3AppInstance   Pop3App::_hinst                    = nullptr;
+Pop3WindowHandle Pop3App::_hwnd                     = nullptr;
+poptb_callback*  Pop3App::_deviceLost               = nullptr;
 #endif
-int          Pop3App::_icon                         = 0;
-bool         Pop3App::_active                       = true;
-bool         Pop3App::_quitting                     = false;
-std::string  Pop3App::_windowName;
+int              Pop3App::_icon                     = 0;
+bool             Pop3App::_active                   = true;
+bool             Pop3App::_quitting                 = false;
+std::string      Pop3App::_windowName;
 
 Pop3AppEventCallback    Pop3App::_EventCallback     = nullptr;
 
-_se_translator_function			Pop3App::_Pop3_SEH	= nullptr;
-terminate_handler				Pop3App::_Pop3_Term = nullptr;
+Pop3SEHTranslator               Pop3App::_Pop3_SEH  = nullptr;
+std::terminate_handler          Pop3App::_Pop3_Term  = nullptr;
 
 
-static _se_translator_function	_Pop3_SEH;
-static terminate_handler		_Pop3_Term;
+static Pop3SEHTranslator    _Pop3_SEH;
+static std::terminate_handler _Pop3_Term;
 
 #define WM_AUTORENDERER WM_USER+111
 #define WM_WINEFULLSCREEN WM_USER+112
@@ -42,16 +43,18 @@ void Pop3App::init(const Pop3AppGameInitData & data)
     // Init SDL
     VERIFY(SDL_Init(SDL_INIT_EVERYTHING) == FALSE);
 #else
-    if (_hinst)
-        UnregisterClass(className, _hinst);
+    HINSTANCE hInst = (HINSTANCE)_hinst;
+    if (hInst)
+        UnregisterClass(className, hInst);
 
     _hinst = data.AppData.hinst;
+    hInst = (HINSTANCE)_hinst;
 
     WNDCLASSEX wcex = {};
     wcex.cbSize = sizeof(WNDCLASSEX);
-    wcex.lpfnWndProc = MainWindowProc;
-    wcex.hInstance = _hinst;
-    wcex.hIcon = LoadIcon(_hinst, MAKEINTRESOURCE(_icon));
+    wcex.lpfnWndProc = (WNDPROC)MainWindowProc;
+    wcex.hInstance = hInst;
+    wcex.hIcon = LoadIcon(hInst, MAKEINTRESOURCE(_icon));
     wcex.lpszClassName = className;
     if (!RegisterClassEx(&wcex))
     {
@@ -100,12 +103,12 @@ void Pop3App::CreateScreen()
     DestroyScreen();
 
     _window = SDL_CreateWindow(
-        _windowName.c_str(),                
-        SDL_WINDOWPOS_UNDEFINED,           
-        SDL_WINDOWPOS_UNDEFINED,           
-        1024,                               
-        480,                             
-        SDL_WINDOW_FULLSCREEN       
+        _windowName.c_str(),
+        SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,
+        1024,
+        480,
+        SDL_WINDOW_FULLSCREEN
     );
 
     VERIFY(_window != nullptr);
@@ -114,15 +117,15 @@ void Pop3App::CreateScreen()
     SDL_SysWMinfo systemInfo;
     SDL_VERSION(&systemInfo.version);
     SDL_GetWindowWMInfo(_window, &systemInfo);
-    _hwnd = systemInfo.info.win.window;
+    _hwnd = (Pop3WindowHandle)systemInfo.info.win.window;
     VERIFY(_hwnd != nullptr);
 }
 #else
-HWND Pop3App::CreateScreen()
+Pop3WindowHandle Pop3App::CreateScreen()
 {
     VERIFY(_hinst != nullptr);
     DestroyScreen();
-    _hwnd = CreateWindowEx(
+    HWND hwnd = CreateWindowEx(
         0x40000u,
         className,
         "Populous: The Beginning 1.5",
@@ -133,8 +136,9 @@ HWND Pop3App::CreateScreen()
         1024,
         nullptr,
         nullptr,
-        _hinst,
+        (HINSTANCE)_hinst,
         nullptr);
+    _hwnd = (Pop3WindowHandle)hwnd;
     VERIFY(_hwnd != nullptr);
     return _hwnd;
 }
@@ -151,7 +155,7 @@ void Pop3App::DestroyScreen()
 #else
     if (_hwnd)
     {
-        ::DestroyWindow(_hwnd);
+        ::DestroyWindow((HWND)_hwnd);
         _hwnd = nullptr;
     }
 #endif
@@ -215,9 +219,9 @@ void Pop3App::ProcessWindowsMessages()
 	static MSG msg;
 	static UINT count;
 	count = 2000;
-	while (PeekMessage(&msg, _hwnd, 0, 0, PM_NOREMOVE) && count--)
+	while (PeekMessage(&msg, (HWND)_hwnd, 0, 0, PM_NOREMOVE) && count--)
 	{
-		if (!GetMessage(&msg, _hwnd, 0, 0))
+		if (!GetMessage(&msg, (HWND)_hwnd, 0, 0))
 			break;
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
@@ -233,25 +237,26 @@ void Pop3App::ProcessWindowsMessages(const Pop3InputDispatchTable & dispatchTabl
 }
 
 #ifdef _WIN32
-HINSTANCE Pop3App::getHinstance()
+Pop3AppInstance Pop3App::getHinstance()
 {
     return _hinst;
 }
 
-void Pop3App::setHwnd(HWND h)
+void Pop3App::setHwnd(Pop3WindowHandle h)
 {
     _hwnd = h;
 }
 
-HWND Pop3App::getHwnd()
+Pop3WindowHandle Pop3App::getHwnd()
 {
     return _hwnd;
 }
 
 #if !POP3_BUILD_USE_SDL2
-LRESULT Pop3App::MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam)
 {
-    if (_quitting) return DefWindowProc(hwnd, msg, wParam, lParam);
+    HWND hWnd = (HWND)hwnd;
+    if (_quitting) return DefWindowProc(hWnd, msg, (WPARAM)wParam, (LPARAM)lParam);
 
     switch (msg)
     {
@@ -330,7 +335,7 @@ LRESULT Pop3App::MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
     if (_EventCallback)
         return _EventCallback(hwnd, msg, wParam, lParam);
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProc(hWnd, msg, (WPARAM)wParam, (LPARAM)lParam);
 }
 #endif
 #endif

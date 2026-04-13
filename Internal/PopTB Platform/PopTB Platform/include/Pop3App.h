@@ -1,26 +1,25 @@
 #pragma once
-#ifdef _WIN32
-#include  "Windows.h"
-#endif
 #include "Pop3Build.h"
 #include "Pop3Input.h"
+#include "Pop3MajorFault.h"
 #include <string>
+#include <exception>
 
-typedef void(__stdcall *poptb_callback)(void);
+typedef void(POP3_CALLBACK *poptb_callback)(void);
 
 #if POP3_BUILD_USE_SDL2
-typedef void(__cdecl *Pop3AppEventCallback)(const SDL_Event & ev);
+typedef void(POP3_CDECL *Pop3AppEventCallback)(const SDL_Event & ev);
 #else
-typedef LONG(_stdcall *Pop3AppEventCallback)(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+typedef Pop3Result(POP3_CALLBACK *Pop3AppEventCallback)(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam);
 #endif
 
 struct Pop3AppGameData
 {
     int                             Icon;
-    HINSTANCE                       hinst;
+    Pop3AppInstance                  hinst;
     Pop3AppEventCallback            EventCallBack;
-	_se_translator_function			Seh;
-	terminate_handler				Term;
+    Pop3SEHTranslator               Seh;
+    std::terminate_handler          Term;
 };
 
 struct Pop3AppGameInitData
@@ -38,13 +37,13 @@ public:
     static void init(const Pop3AppGameInitData & data);
 
 #ifdef _WIN32
-	static void         ProcessWindowsMessages();
-    static void         ProcessWindowsMessages(const struct Pop3InputDispatchTable & dispatchTable);
-    static HINSTANCE    getHinstance();
-    static void         setHwnd(HWND h);
-    static HWND         getHwnd();
+    static void             ProcessWindowsMessages();
+    static void             ProcessWindowsMessages(const struct Pop3InputDispatchTable & dispatchTable);
+    static Pop3AppInstance  getHinstance();
+    static void             setHwnd(Pop3WindowHandle h);
+    static Pop3WindowHandle getHwnd();
 #if !POP3_BUILD_USE_SDL2
-    static HWND         CreateScreen();
+    static Pop3WindowHandle CreateScreen();
 #endif
 #endif
 
@@ -62,9 +61,9 @@ public:
     static void DestroyScreen();
     static void Terminate();
 
-	// Exception Handlers
-	static _se_translator_function	_Pop3_SEH;
-	static terminate_handler		_Pop3_Term;
+    // Exception Handlers
+    static Pop3SEHTranslator        _Pop3_SEH;
+    static std::terminate_handler   _Pop3_Term;
 private:
     // General info
     static std::string              _windowName;
@@ -79,13 +78,13 @@ private:
     static Pop3AppEventCallback     _EventCallback;
 
 #if !POP3_BUILD_USE_SDL2
-    static LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static Pop3Result POP3_CALLBACK MainWindowProc(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam);
 #endif
 
     // Old Win32 shit
 #ifdef _WIN32
     static poptb_callback*          _deviceLost;
-    static HINSTANCE                _hinst;
-    static HWND                     _hwnd;
+    static Pop3AppInstance          _hinst;
+    static Pop3WindowHandle        _hwnd;
 #endif
 };

@@ -1,6 +1,5 @@
 #pragma once
 #include "../../../../Pop3.h"
-#include <Windows.h>
 #include "Pop3Types.h"
 #include <thread>
 #include <condition_variable>
@@ -92,7 +91,7 @@ struct POP3NETWORK_GAMEDATA
     std::function<void(std::string&)> Script_Callback;
 };
 
-#define	NET_CALLBACK	__stdcall
+#define	NET_CALLBACK	POP3_CALLBACK
 // These are the callback types.
 typedef void (NET_CALLBACK *NetworkServicesCallbackProc)(void* connection, UNICODE_CHAR* lpDriverDescription, GUID* guiddatatype, DWORD noguiddatatypes, void* param);
 typedef void (NET_CALLBACK *NetworkDataCallbackProc)(DWORD from_id, void* dataPtr, DWORD dataSize, DWORD messageType, const void* param);

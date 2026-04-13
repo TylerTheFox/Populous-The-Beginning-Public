@@ -1,22 +1,63 @@
 #pragma once
 
-#include <Windows.h>
+// =============================================================================
+// Pop3Types.h — Platform-independent type definitions
+//
+// This header deliberately does NOT include <Windows.h>. All types are defined
+// from standard C++ headers so that game code consuming this header is not
+// exposed to the Win32 API surface. When <Windows.h> IS included elsewhere
+// (e.g. by platform .cpp files that need Win32 APIs), the guards below prevent
+// double-definition conflicts.
+// =============================================================================
+
+#include <cstdint>
 #include <string>
 
-// String literal pass-through used by Library8 assertion macros.
-#ifndef _LBSTR
-#define _LBSTR(x) x
-#endif
-typedef char                CHAR;
-typedef short               SHORT;
-typedef long                LONG;
+// ---- Windows-compatible base types ----------------------------------------
+// These match the Windows SDK definitions exactly (size, signedness) so that
+// code which was written against Win32 types continues to compile unchanged.
+// The #ifndef guards use the same macros that the Windows SDK sets, so if
+// <Windows.h> is pulled in before or after this header, only one definition
+// of each type exists.
+//
+// minwindef.h guard: _MINWINDEF_
+// windef.h guard:    _WINDEF_
+// winnt.h guard:     _WINNT_
+// basetsd.h guard:   _BASETSD_H_
+// guiddef.h guard:   GUID_DEFINED
+// --------------------------------------------------------------------------
+
+#ifndef _MINWINDEF_
+typedef unsigned long       DWORD;
 typedef int                 BOOL;
 typedef unsigned char       BYTE;
 typedef unsigned short      WORD;
+typedef unsigned int        UINT;
 typedef float               FLOAT;
-typedef DWORD               ULONG;
-typedef WORD                UWORD;
-typedef BYTE                UCHAR;
+#ifndef FALSE
+#define FALSE               0
+#endif
+#ifndef TRUE
+#define TRUE                1
+#endif
+#endif
+
+#ifndef _WINNT_
+typedef char                CHAR;
+typedef short               SHORT;
+typedef long                LONG;
+typedef unsigned long long  ULONGLONG;
+typedef unsigned short      USHORT;
+#endif
+
+// ---- Bullfrog / PopTB game types ------------------------------------------
+// These are the canonical types used throughout the game codebase. They are
+// defined in terms of the base types above (or directly from C++ fundamentals)
+// so they work with or without <Windows.h>.
+
+typedef unsigned long       ULONG;
+typedef unsigned short      UWORD;
+typedef unsigned char       UCHAR;
 typedef int                 SINT;
 typedef signed long         SLONG;
 typedef signed char         SBYTE;
@@ -27,6 +68,11 @@ typedef UWORD               UNICHAR;
 typedef wchar_t             UNICODE_CHAR;
 typedef std::wstring        UNICODE_STRING;
 
+// String literal pass-through used by Library8 assertion macros.
+#ifndef _LBSTR
+#define _LBSTR(x) x
+#endif
+
 // types for pointing to const strings
 typedef const TBCHAR*       LPCTBCHAR;
 typedef const CHAR*         LPCCHAR;
@@ -34,6 +80,43 @@ typedef const UNICHAR*      LPCUNICHAR;
 
 // <t>>TbHandle<<
 typedef void* TbHandle;
+
+// ---- Opaque platform handle types ----------------------------------------
+// These replace raw Windows types (HWND, HINSTANCE, etc.) in the public API.
+// On Windows they are pointer-sized opaque handles; the platform .cpp files
+// cast them to/from the real Windows types internally.
+typedef void*               Pop3WindowHandle;   // HWND
+typedef void*               Pop3AppInstance;     // HINSTANCE
+typedef long                Pop3Result;          // LRESULT (LONG_PTR on x86)
+typedef unsigned int        Pop3WParam;          // WPARAM  (UINT_PTR on x86)
+typedef long                Pop3LParam;          // LPARAM  (LONG_PTR on x86)
+
+// ---- Calling convention macros -------------------------------------------
+// Abstracts __stdcall / __cdecl so headers compile without <Windows.h>.
+#ifdef _MSC_VER
+#define POP3_CALLBACK       __stdcall
+#define POP3_CDECL          __cdecl
+#else
+#define POP3_CALLBACK
+#define POP3_CDECL
+#endif
+
+// ---- GUID ----------------------------------------------------------------
+// Platform-independent GUID structure compatible with the Windows SDK layout.
+#ifndef GUID_DEFINED
+#define GUID_DEFINED
+typedef struct {
+    unsigned long  Data1;
+    unsigned short Data2;
+    unsigned short Data3;
+    unsigned char  Data4[8];
+} GUID;
+#endif
+
+// ---- MAX_PATH ------------------------------------------------------------
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
 
 #define OBJECTS_EXPLICT_TYPE 0
 #if OBJECTS_EXPLICT_TYPE

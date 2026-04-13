@@ -1,5 +1,5 @@
 #include "Pop3Debug.h"
-#include <windows.h>
+#include "Pop3Platform_Win32.h"
 #include <ddraw.h>
 #include <LbSurface.h>
 

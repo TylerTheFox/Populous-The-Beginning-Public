@@ -75,7 +75,7 @@ public:
 #if POP3_BUILD_USE_SDL2
     static void                             ProcessEvent(const SDL_Event & ev);
 #else
-    static LRESULT                          ProcessEvent(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static Pop3Result                       ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam);
 #endif
 
     static void                             EnterTextMode();
@@ -84,7 +84,7 @@ private:
 #if POP3_BUILD_USE_SDL2
     static void                             sortOutSpecialKeys(Pop3InputKey code, Uint32 down);
 #else
-    static Pop3InputKey                     sortOutSpecialKeys(const WPARAM & wParam, const USHORT & KeyboardFlags, const USHORT & makeCode, const bool & down);
+    static Pop3InputKey                     sortOutSpecialKeys(const Pop3WParam & wParam, const USHORT & KeyboardFlags, const USHORT & makeCode, const bool & down);
 #endif
     static void                             handleTextInput(const char & c);
 

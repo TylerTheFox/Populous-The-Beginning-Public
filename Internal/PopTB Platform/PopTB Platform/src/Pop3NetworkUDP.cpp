@@ -1,3 +1,4 @@
+#include "Pop3Platform_Win32.h"
 #include "Pop3NetworkUDP.h"
 #include "Pop3Debug.h"
 #include "Pop3App.h"
@@ -39,7 +40,7 @@ void Pop3NetworkUDP::RunServer()
         auto & local_port = *GamePtrs.LocalPort;
         bool first_connection = true;
 
-		_set_se_translator(Pop3App::_Pop3_SEH);
+		_set_se_translator((_se_translator_function)Pop3App::_Pop3_SEH);
 		set_terminate(Pop3App::_Pop3_Term);
 
         if (_mode == SM_JOINING)
