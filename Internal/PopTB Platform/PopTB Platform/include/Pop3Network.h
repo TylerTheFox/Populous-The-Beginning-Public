@@ -188,51 +188,60 @@ struct PopTBFilePartRequest
     unsigned int        packet_num;
 };
 
-struct PopTBTestFile
+// Sent by host as payload of HOST_SEND_FILE_TRANSFER_COMPLETE to mark end of a window.
+struct PopTBWindowComplete
 {
-    PopTBTestFile()
-    {
-        file_name = "ALargeFile.zip";
-        length = 64000000;
-        someints = new int[length];
-        for (int i = 0; i < length; i++)
-            someints[i] = i;
-    }
-    ~PopTBTestFile()
-    {
-        delete[] someints;
-    }
-    std::string file_name;
-    int* someints;
-    size_t length;
+    unsigned int        window_start;
+    unsigned int        window_end;     // exclusive
 };
+
+// Sent by client as payload of CLIENT_RESEND_FILE_PART — bitmap ACK for a window.
+#define FT_MAX_BITMAP_INTS 8  // supports windows up to 256 packets
+struct PopTBWindowAck
+{
+    unsigned int        window_start;
+    unsigned int        window_size;
+    unsigned int        received_bitmap[FT_MAX_BITMAP_INTS];
+};
+
+// Sliding window constants
+#define FT_INITIAL_WINDOW_SIZE      32
+#define FT_MIN_WINDOW_SIZE          4
+#define FT_MAX_WINDOW_SIZE          (FT_MAX_BITMAP_INTS * 32)  // 256
+#define FT_INTER_PACKET_SLEEP_MS    1
+#define FT_WINDOW_TIMEOUT_MS        3000
+#define FT_MAX_RETRIES              20
 
 enum class FileTransferStatus
 {
     Ready,
     Host_Waiting_On_Client_Ack,
-    Host_Waiting_On_Client_To_Finish_Resend_Requests,
-    Host_Transfering_Data,
-    Host_Waiting_On_Client_Resend_Complete,
+    Host_Sending_Window,
+    Host_Waiting_On_Window_Ack,
     Host_Waiting_On_Client_To_Finish_Transfer,
-    Client_Sending_Resend_Requests,
-    Client_Waiting_On_Host_To_Start_Sending_File_Parts,
-    Client_Waiting_On_Host_Parts_To_Finish,
+    Client_Waiting_On_Host_To_Start,
+    Client_Receiving_Window,
     Transfer_Complete
 };
 
 struct FileTransfer
 {
     std::string                                     peer_address;
-    UWORD                                           peer_port;
-    ULONGLONG                                       LastContactTime;
-    PopTBFileStartPacket                            FileHeader;
+    UWORD                                           peer_port = 0;
+    ULONGLONG                                       LastContactTime = 0;
+    PopTBFileStartPacket                            FileHeader = {};
     std::vector<PopTBFilePartPacket>                FileParts;
-    std::vector<PopTBFilePartRequest>               FilePartsToBeResent;
     std::map<unsigned int, PopTBFilePartPacket>     FilePartsRecv;
-    FileTransferStatus                              Status;
-    ULONGLONG                                       SleepTimer;
-    ULONGLONG                                       TotalByteSent;
+    FileTransferStatus                              Status = FileTransferStatus::Ready;
+    ULONGLONG                                       SleepTimer = 0;
+    ULONGLONG                                       TotalByteSent = 0;
+
+    // Sliding window state
+    unsigned int        window_start = 0;
+    unsigned int        window_size = FT_INITIAL_WINDOW_SIZE;
+    unsigned int        total_parts = 0;
+    unsigned int        retry_count = 0;
+    ULONGLONG           window_send_time = 0;
 };
 
 class Pop3Network
@@ -285,6 +294,7 @@ protected:
     bool                                            allow_joiners;
     Poco::Condition                                 cv2;
     std::map<std::wstring, POP3NETWORK_PLAYERINFO>  players;
+    mutable Poco::Mutex                             players_mu;
     mutable std::list<class PacketInfo>             packets;
 
     void                                            ParsePacket(char* buffer, DWORD buf_size, const char* peer_address, UWORD peer_port);
@@ -313,16 +323,18 @@ private:
     void                                            join_watchdog_func();
     void                                            compile_fileparts();
 
-    // File Transfers
+    // File Transfers — sliding window protocol
     void                                            filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer);
     void                                            filetransfer_host_process_client_ready(const char * peer_address, UWORD peer_port);
     void                                            filetransfer_client_process_file_part(const char * buffer);
-    void                                            filetransfer_client_process_all_parts_sent();
-    void                                            filetransfer_host_process_resend_request(const char * buffer);
-    void                                            filetransfer_host_process_resend_requests_complete();
+    void                                            filetransfer_client_process_window_complete(const char * buffer);
+    void                                            filetransfer_host_process_window_ack(const char * buffer);
     void                                            filetransfer_host_process_client_transfer_successful();
-    void                                            filetransfer_process_timeout(const char * peer_address, UWORD peer_port);
+    void                                            filetransfer_host_send_window();
+    void                                            filetransfer_host_send_missing(const unsigned int * bitmap, unsigned int ws, unsigned int wsize);
     void                                            filetransfer_host_requesting_update();
+protected:
+    void                                            filetransfer_tick();
 
     // Network Layer Functions
     virtual void                                    ServerInit(UBYTE mode) = 0;
