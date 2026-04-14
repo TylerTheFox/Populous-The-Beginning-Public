@@ -200,16 +200,34 @@ TbError rangeChecking(long x, long y, SINT GraphicsWindowX, SINT GraphicsWindowY
 		return LB_OK_NO_DRAW;
 	}
 
-	// Clip against the render area (full drawable surface) — NOT the viewport.
-	// Matches the original Bullfrog library behaviour where sprite clipping
-	// uses the clip rectangle (effectively the full surface), independent of
-	// the active viewport.  This allows tooltips/UI popups drawn with absolute
-	// screen coords to extend outside a narrowed game-area viewport (e.g.,
-	// when the sidebar is visible) without being over-clipped.
-	const SINT clipLeft   = 0;
-	const SINT clipTop    = 0;
-	const SINT clipRight  = lbDisplay.GraphicsScreenWidth;
-	const SINT clipBottom = lbDisplay.GraphicsScreenHeight;
+	// Clip against the current clip rect — NOT just the full render area.
+	// _lbCurrentClipRect is maintained by LbDraw_SetClipRect / LbDraw_SetViewPort;
+	// it defaults to (viewport ∩ render-area) after each viewport change and can
+	// be widened (within the viewport) by an explicit LbDraw_SetClipRect call.
+	//
+	// Earlier revision of this function clipped against the full render area to
+	// let tooltips extend past a narrowed viewport, but that turned out too
+	// permissive: DrawRepeatingTextureRectangle and similar tile loops tile
+	// slab-by-slab inside a narrow UI viewport, and the trailing slab ran past
+	// the viewport edge into the adjacent maingame region. Properly honouring
+	// the clip rect fixes that without breaking tooltip behaviour, because
+	// tooltip paths that need to draw past a narrow viewport set a matching
+	// wider viewport/clip rect up front anyway.
+	//
+	// _lbCurrentClipRect is stored in viewport-local coords (see LbDraw.cpp),
+	// and at this point x/y are in render-area-absolute coords (we added
+	// GraphicsWindowX/Y above) — so translate clip rect to absolute too.
+	SINT clipLeft   = lbDisplay.GraphicsWindowX + _lbCurrentClipRect.Left;
+	SINT clipTop    = lbDisplay.GraphicsWindowY + _lbCurrentClipRect.Top;
+	SINT clipRight  = lbDisplay.GraphicsWindowX + _lbCurrentClipRect.Right;
+	SINT clipBottom = lbDisplay.GraphicsWindowY + _lbCurrentClipRect.Bottom;
+
+	// Safety clamp to the render area so we never write past the surface
+	// regardless of what callers have configured.
+	if (clipLeft   < 0) clipLeft   = 0;
+	if (clipTop    < 0) clipTop    = 0;
+	if (clipRight  > (SINT)lbDisplay.GraphicsScreenWidth)  clipRight  = (SINT)lbDisplay.GraphicsScreenWidth;
+	if (clipBottom > (SINT)lbDisplay.GraphicsScreenHeight) clipBottom = (SINT)lbDisplay.GraphicsScreenHeight;
 
 	// Early rejection — sprite entirely outside clip bounds
 	if (x + sprWd <= clipLeft || x >= clipRight)
