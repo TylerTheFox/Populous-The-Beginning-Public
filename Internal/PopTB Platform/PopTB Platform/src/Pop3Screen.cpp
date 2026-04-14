@@ -31,6 +31,10 @@ bool                Pop3Screen::s_windowed            = true;
 bool                Pop3Screen::s_fullscreen          = false;
 bool                Pop3Screen::s_border              = true;
 bool                Pop3Screen::s_ready               = false;
+bool                Pop3Screen::s_hwComposite         = false;
+
+void Pop3Screen::setHwCompositeActive(bool on) { s_hwComposite = on; }
+bool Pop3Screen::hwCompositeActive()           { return s_hwComposite; }
 
 // ---------------------------------------------------------------
 //  Textured-quad vertex format for presenting the framebuffer
@@ -175,10 +179,15 @@ bool Pop3Screen::createFramebufferTexture(int width, int height)
         s_pFramebufferTex = nullptr;
     }
 
+    // A8R8G8B8 so the alpha channel survives — the Phase 7 composite keys
+    // on palette-index-255 → alpha=0 to punch the SW quad through to HW
+    // geometry in the world area. X8R8G8B8 would throw away the alpha
+    // bits we wrote into the texture, leaving a fully-opaque quad that
+    // hides HW behind it.
     HRESULT hr = s_pDevice->CreateTexture(
         width, height, 1,
         D3DUSAGE_DYNAMIC,
-        D3DFMT_X8R8G8B8,
+        D3DFMT_A8R8G8B8,
         D3DPOOL_DEFAULT,
         &s_pFramebufferTex,
         nullptr);
@@ -219,7 +228,36 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     if (!createFramebufferTexture(width, height))
         return;
 
-    // Upload 8bpp indexed pixels → 32bpp XRGB texture
+    // Phase 7 option A: when HW rendering is active, we flip the frame
+    // composite order so HW world geometry (terrain/sprites/etc.) draws
+    // FIRST onto a clean backbuffer, then the SW back surface layers on
+    // top as an alpha-keyed quad (palette index 255 = fully transparent,
+    // everything else opaque). That way UI drawn into the SW back
+    // surface (panels, minimap, text, ghost-blended sprites that bail
+    // back to SW) appears on top of the HW world exactly where the SW
+    // pipeline wrote pixels, and HW terrain shows through everywhere
+    // else. Without the reorder (pre-Phase-7), HW geometry drew on top
+    // of the SW composite, so anything rendered into SW in the world
+    // area got overdrawn by HW terrain and was invisible.
+    //
+    // Key palette index 255 is chosen because the SW pipeline clears the
+    // back surface to it after each LbScreen_Swap when HW is active
+    // (see LbScreen.cpp). It's an uncommon UI colour so we don't false-
+    // positive on legit UI pixels; if the rest of the SW pipeline ends
+    // up legitimately emitting 255 somewhere that looks transparent, we
+    // pick a different sentinel.
+    const bool hwComposite = s_hwComposite;
+    // Palette index 0 as the transparent key. Rationale: RLE-encoded
+    // sprites (which is how nearly every UI element draws) use byte 0 as
+    // "end of row" in the decoder, so decoded sprite pixels never write
+    // index 0 to the back surface. The earlier choice of 255 false-
+    // positived the shaman portrait in the sidebar because 255 is the
+    // cycled-highlight palette slot (see cycle_clr_255 in Palettes.cpp).
+    const unsigned int kAlphaKeyIndex = 0;
+
+    // Upload 8bpp indexed pixels → 32bpp ARGB texture. In HW-composite
+    // mode, palette index 255 becomes alpha=0 (transparent); everywhere
+    // else stays alpha=255. In SW-only mode, always alpha=255.
     D3DLOCKED_RECT lr;
     if (SUCCEEDED(s_pFramebufferTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
     {
@@ -231,29 +269,38 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
 
             for (int x = 0; x < width; x++)
             {
-                // Palette entries are RGBX (R,G,B,reserved).
-                // D3D expects XRGB (0x00RRGGBB).
-                unsigned char idx = srcRow[x];
-                unsigned char r = palette[idx * 4 + 0];
-                unsigned char g = palette[idx * 4 + 1];
-                unsigned char b = palette[idx * 4 + 2];
-                dstRow[x] = (0xFF000000u) | (r << 16) | (g << 8) | b;
+                const unsigned char idx = srcRow[x];
+                const unsigned int alpha =
+                    (hwComposite && idx == kAlphaKeyIndex) ? 0x00u : 0xFFu;
+                const unsigned char r = palette[idx * 4 + 0];
+                const unsigned char g = palette[idx * 4 + 1];
+                const unsigned char b = palette[idx * 4 + 2];
+                dstRow[x] = (alpha << 24) | (r << 16) | (g << 8) | b;
             }
         }
 
         s_pFramebufferTex->UnlockRect(0);
     }
 
-    // Begin scene → draw framebuffer quad → overlay → end → present
     if (SUCCEEDED(s_pDevice->BeginScene()))
     {
         s_pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF000000, 1.0f, 0);
 
-        drawFramebufferQuad();
-
-        // Fire overlay callback (ImGui renders here)
-        if (s_overlayCallback)
-            s_overlayCallback();
+        if (hwComposite)
+        {
+            // HW first (world geometry onto the clean backbuffer), then
+            // the SW back surface as an alpha-keyed overlay quad.
+            if (s_overlayCallback)
+                s_overlayCallback();
+            drawFramebufferQuad(/*alphaBlend=*/true);
+        }
+        else
+        {
+            // Legacy order: SW framebuffer quad, then overlay (ImGui only).
+            drawFramebufferQuad(/*alphaBlend=*/false);
+            if (s_overlayCallback)
+                s_overlayCallback();
+        }
 
         s_pDevice->EndScene();
     }
@@ -261,7 +308,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     s_pDevice->Present(nullptr, nullptr, nullptr, nullptr);
 }
 
-void Pop3Screen::drawFramebufferQuad()
+void Pop3Screen::drawFramebufferQuad(bool alphaBlend)
 {
     if (!s_pFramebufferTex || !s_pDevice)
         return;
@@ -282,13 +329,33 @@ void Pop3Screen::drawFramebufferQuad()
     s_pDevice->SetTexture(0, s_pFramebufferTex);
     s_pDevice->SetFVF(SCREEN_FVF);
 
+    // Reset texture stage ops — HwDisplayList::applyState may have left
+    // COLOROP=SELECTARG2 (from HWRMODE_TINT) which would ignore the
+    // framebuffer texture entirely and paint the quad in the default
+    // diffuse colour (white) since our FVF has no vertex colour.
+    s_pDevice->SetTextureStageState(0, D3DTSS_COLOROP,   D3DTOP_SELECTARG1);
+    s_pDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    s_pDevice->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_SELECTARG1);
+    s_pDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+
     // Point sampling for crisp pixel art
     s_pDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
     s_pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
     s_pDevice->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
 
-    // Disable alpha blending for the base framebuffer
-    s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    // Alpha blending for the Phase 7 composite — SW framebuffer overlaid
+    // on HW world geometry with palette-index-255 → alpha=0 pixels
+    // showing HW through. For SW-only mode we disable it (opaque quad).
+    if (alphaBlend)
+    {
+        s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        s_pDevice->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+        s_pDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    }
+    else
+    {
+        s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    }
     s_pDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
     s_pDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
     s_pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
@@ -296,6 +363,7 @@ void Pop3Screen::drawFramebufferQuad()
     s_pDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(ScreenVertex));
 
     s_pDevice->SetTexture(0, nullptr);
+    s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
 }
 
 // ---------------------------------------------------------------

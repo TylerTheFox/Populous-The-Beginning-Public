@@ -448,6 +448,17 @@ TbError LbScreen_Swap(ULONG flags)
     if (!_lbBackSurface.SurfaceArea.mpData || !_lbFrontSurface.SurfaceArea.mpData)
         return LB_ERROR;
 
+    // Phase 7 composite mode: clear the back surface to the alpha-key
+    // palette index so the next frame starts fully transparent. SW draws
+    // (UI panels, minimap, text, ghost-blended sprites that bail back to
+    // SW) then overwrite the 255 with opaque colours; Pop3Screen's
+    // quad-composite keys on index 255 to show HW geometry through the
+    // untouched world area. Without this, stale terrain from previous
+    // SW-only frames would linger and block HW.
+    //
+    // Clear happens BEFORE the back->front blit so this swap still
+    // presents whatever the game just drew; next frame starts clean.
+
     _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_SWAP, NULL);
 
     // Copy back surface → front surface (software blit)
@@ -462,6 +473,15 @@ TbError LbScreen_Swap(ULONG flags)
         _lbFrontSurface.SurfaceArea.mSize.Width,
         _lbFrontSurface.SurfaceArea.mSize.Height,
         (const unsigned char*)&_lbGlobalPalette.Entry[0]);
+
+    // Phase 7 composite: prep the back surface for the next frame by
+    // clearing it to the alpha-key palette index (255). See the comment
+    // at the top of this function for rationale.
+    if (Pop3Screen::hwCompositeActive())
+    {
+        // Palette index 0 = alpha key (see Pop3Screen::present comment).
+        LbSurface_ClearRect(&_lbBackSurface, NULL, (TbColour)0, 0);
+    }
 
     _LbGCBS.EventNotification(LBCB_SCREEN_END_SWAP, NULL);
 

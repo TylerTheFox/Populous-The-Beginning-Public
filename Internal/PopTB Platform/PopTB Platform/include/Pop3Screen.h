@@ -94,6 +94,13 @@ public:
     // Handle device lost / reset (e.g. Alt+Tab).
     static bool handleDeviceLost();
 
+    // Phase 7: game calls this when HwRender::setActive flips. When on,
+    // present() flips composite order (HW first, SW alpha-keyed quad on
+    // top) and clears the back surface to the alpha-key palette index
+    // after every LbScreen_Swap so each frame starts fully transparent.
+    static void setHwCompositeActive(bool on);
+    static bool hwCompositeActive();
+
 private:
     static IDirect3D9*          s_pD3D;
     static IDirect3DDevice9*    s_pDevice;
@@ -112,11 +119,12 @@ private:
     static bool                 s_fullscreen;
     static bool                 s_border;
     static bool                 s_ready;
+    static bool                 s_hwComposite;    // Phase 7 composite-order flip
 
     static bool createDevice();
     static void releaseDevice();
     static bool createFramebufferTexture(int width, int height);
-    static void drawFramebufferQuad();
+    static void drawFramebufferQuad(bool alphaBlend = false);
     // Detect a window resize and Reset() the device so the backbuffer tracks
     // the window client rect. Returns true if the device was just reset and
     // the caller should skip this frame (mirrors handleDeviceLost).
