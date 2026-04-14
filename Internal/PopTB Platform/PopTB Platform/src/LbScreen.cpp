@@ -5,7 +5,7 @@
 #include    <LbScreen.h>
 #include    <LbSCBack.h>
 #include    <Pop3Screen.h>
-#include    <windows.h>
+#include    "Pop3Platform_Win32.h"
 
 // Forward declarations for external functions (defined in Library8/src)
 extern void LbSurface_Unlock(TbSurface *surface);

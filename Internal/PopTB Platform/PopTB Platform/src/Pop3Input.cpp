@@ -1,3 +1,4 @@
+#include "Pop3Platform_Win32.h"
 #include "Pop3Input.h"
 #include "Pop3App.h"
 #include "Pop3Debug.h"
@@ -220,7 +221,7 @@ void Pop3Input::sortOutSpecialKeys(Pop3InputKey code, Uint32 type)
     }
 }
 #else
-Pop3InputKey Pop3Input::sortOutSpecialKeys(const WPARAM & wParam, const USHORT & KeyboardFlags, const USHORT & makeCode, const bool & down)
+Pop3InputKey Pop3Input::sortOutSpecialKeys(const Pop3WParam & wParam, const USHORT & KeyboardFlags, const USHORT & makeCode, const bool & down)
 {
     int extended = ((KeyboardFlags & RI_KEY_E0) != 0);
     static const int SC_SHIFT_R = 54;
@@ -282,7 +283,7 @@ void Pop3Input::handleTextInput(const char & c)
 }
 
 #if !POP3_BUILD_USE_SDL2
-LRESULT Pop3Input::ProcessEvent(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam)
 {
     static const Pop3InputDispatchTable * dispatchPtr;
     static Pop3InputKey currKey;
@@ -440,7 +441,7 @@ LRESULT Pop3Input::ProcessEvent(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     default:;
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProc((HWND)hwnd, msg, (WPARAM)wParam, (LPARAM)lParam);
 }
 #else
 void Pop3Input::ProcessEvent(const SDL_Event & ev)

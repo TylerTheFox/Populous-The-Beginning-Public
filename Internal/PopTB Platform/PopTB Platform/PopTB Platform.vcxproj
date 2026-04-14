@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\Pop3App.h" />
+    <ClInclude Include="include\Pop3Platform_Win32.h" />
     <ClInclude Include="include\Pop3Assert.h" />
     <ClInclude Include="include\Pop3Build.h" />
     <ClInclude Include="include\Pop3Compress.h" />

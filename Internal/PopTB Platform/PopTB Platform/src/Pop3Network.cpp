@@ -33,7 +33,6 @@ Pop3Network::Pop3Network() : player_num(0), connection_retries(0), am_host(false
 
 Pop3Network::~Pop3Network()
 {
-    DebugBreak();
 }
 
 Poco::Mutex packet_info_mu;
@@ -86,6 +85,7 @@ BOOL Pop3Network::GetPlayerInfo(POP3NETWORK_PLAYERINFO * out_player)
         out_player[i].inUse = FALSE;
     }
 
+    Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
         if (player.second.inUse && player.second.uniquePlayerId > -1 && player.second.uniquePlayerId < NETWORK_NUMBER_PLAYERS)
@@ -125,7 +125,7 @@ int Pop3Network::SendData(DWORD to_id, void * dataPtr, DWORD size)
 
 int Pop3Network::SendChat(BYTE chat_targets, const UNICODE_CHAR * message)
 {
-    static char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PACKET_SIZE];
     int len = sizeof(UNICODE_CHAR) * (std::char_traits<UNICODE_CHAR>::length(message) + 1);
     buf[0] = static_cast<char>(player_num); // from
     buf[1] = chat_targets; // to
@@ -162,7 +162,8 @@ ULONGLONG Pop3Network::GetCurrentMs()
 
 POP3NETWORK_PLAYERINFO & Pop3Network::GetPlayerDetails(UBYTE playernum)
 {
-    UEXCEED(playernum, NETWORK_NUMBER_PLAYERS - 1); // Arrays start at 0. It should never reach 4.
+    UEXCEED(playernum, NETWORK_NUMBER_PLAYERS - 1);
+    Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
         if (player.second.inUse && player.second.uniquePlayerId == playernum)
@@ -171,7 +172,6 @@ POP3NETWORK_PLAYERINFO & Pop3Network::GetPlayerDetails(UBYTE playernum)
         }
     }
 
-    // Player not found!
     static POP3NETWORK_PLAYERINFO ret{};
     ret.inUse = FALSE;
     return ret;
@@ -179,6 +179,7 @@ POP3NETWORK_PLAYERINFO & Pop3Network::GetPlayerDetails(UBYTE playernum)
 
 int Pop3Network::GetPlayerCount()
 {
+    Poco::Mutex::ScopedLock lock(players_mu);
     int count = 0;
 
     for (auto& player : players)
@@ -231,20 +232,27 @@ void Pop3Network::transfer_file(DWORD to, const std::string & file_name, const c
     }
 
     // Copy the last packet
-    auto remianing_size = end_ptr - file_ptr;
+    auto remaining_size = end_ptr - file_ptr;
 
-    if (remianing_size)
+    if (remaining_size)
     {
         FT.FileParts[idx].packet_num = idx;
-        memcpy(&FT.FileParts[idx].data, file_ptr, remianing_size);
+        memcpy(&FT.FileParts[idx].data, file_ptr, remaining_size);
     }
 
     memcpy(&FT.FileHeader.file_name[0], file_name.c_str(), file_name.length());
     FT.FileHeader.file_size = length;
     FT.SleepTimer = 0;
 
-    // Host is ready to transmit, send start packet.
-    Pop3Debug::trace("Sending file...");
+    // Init sliding window
+    FT.window_start = 0;
+    FT.window_size = FT_INITIAL_WINDOW_SIZE;
+    FT.total_parts = static_cast<unsigned int>(number_of_parts);
+    FT.retry_count = 0;
+    FT.Status = FileTransferStatus::Host_Waiting_On_Client_Ack;
+    FT.LastContactTime = GetCurrentMs();
+
+    Pop3Debug::trace("Sending file (%u parts, window=%u)...", FT.total_parts, FT.window_size);
     Send(to, Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER, reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
 }
 
@@ -282,7 +290,7 @@ ULONGLONG Pop3Network::getFileTransferSleepTimer()
 void Pop3Network::send_remove_player(SWORD player_id)
 {
     if (player_id < 0) return;
-    static char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PACKET_SIZE];
 
     memset(buf, 0, MAX_PACKET_SIZE);
     buf[0] = static_cast<char>(player_id);
@@ -291,6 +299,7 @@ void Pop3Network::send_remove_player(SWORD player_id)
 
 void Pop3Network::remove_player_impl(int player_id)
 {
+	Poco::Mutex::ScopedLock lock(players_mu);
 	for (auto it = players.begin(); it != players.end();)
 	{
 		if (it->second.uniquePlayerId == player_id)
@@ -337,6 +346,7 @@ int Pop3Network::SendChatToAll(const char * buf, int buf_len)
 
 SWORD Pop3Network::get_player_id(const char * peer_address, UWORD peer_port)
 {
+    Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
         if (player.second.inUse && player.second.port == peer_port && strcmp(player.second.address, peer_address) == 0)
@@ -358,6 +368,7 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
 
     Pop3Debug::trace("Join request recieved from %s on port %d requesting player number %d on build %d.%d.%d", peer_address, peer_port, pn, buffer[0], buffer[1], version.s);
 
+    Poco::Mutex::ScopedLock lock(players_mu);
     for (auto & p : players)
     {
         if (p.second.inUse)
@@ -386,8 +397,9 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
 void Pop3Network::send_players(int to_id)
 {
     if (to_id < 0) return;
+    Poco::Mutex::ScopedLock lock(players_mu);
     int p = 1;
-    static char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PACKET_SIZE];
     memset(buf, 0, sizeof(buf));
     buf[0] = 0; // number of players
 
@@ -410,7 +422,8 @@ void Pop3Network::send_players(int to_id)
 void Pop3Network::send_add_player(SWORD player_id)
 {
     if (player_id < 0) return;
-    static char buf[MAX_PACKET_SIZE];
+    Poco::Mutex::ScopedLock lock(players_mu);
+    char buf[MAX_PACKET_SIZE];
 
     memset(buf, 0, MAX_PACKET_SIZE);
     for (auto& player : players)
@@ -429,7 +442,7 @@ void Pop3Network::send_add_player(SWORD player_id)
 
 void Pop3Network::SendMyInfo(const char * peer_address, UWORD peer_port) const
 {
-    static char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PACKET_SIZE];
     memset(buf, 0, MAX_PACKET_SIZE);
     // Player num
     buf[0] = *GamePtrs.RequestedPlayerNum;
@@ -463,6 +476,7 @@ void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char *
 #define PLAYER_SLOT_INVALID -1
 SWORD Pop3Network::add_player(const char * peer_address, UWORD peer_port, SWORD player_number, bool is_host, UNICODE_CHAR * player_name)
 {
+    Poco::Mutex::ScopedLock lock(players_mu);
     Pop3Debug::trace("Adding player %d on ip %s:%d (%d) %ls", player_number, peer_address, peer_port, is_host, player_name);
 
     // Don't add duplicate of player
@@ -560,7 +574,7 @@ void Pop3Network::SendPointers(const char * peer_address, UWORD peer_port)
     // ReSharper disable once CppJoinDeclarationAndAssignment
     void* ptr;
     auto i = 0;
-    static char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PACKET_SIZE];
     U version{ BUILD_NUMBER };
 
     memset(buf, 0, MAX_PACKET_SIZE);
@@ -610,7 +624,7 @@ void Pop3Network::send_join_request() const
 {
     U version{ BUILD_NUMBER };
     size_t i = 0;
-    static char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PACKET_SIZE];
 
     memset(buf, 0, MAX_PACKET_SIZE);
     buf[i++] = MAJOR_VERSION;
@@ -623,6 +637,9 @@ void Pop3Network::send_join_request() const
 
 void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_address, UWORD peer_port)
 {
+    // Minimum valid packet: 2 bytes header (packet type + message type) + at least 1 byte payload for most types
+    if (buf_size < 2) return;
+
     bool is_host;
     SWORD player_number;
     SWORD from_id = get_player_id(peer_address, peer_port);
@@ -635,8 +652,6 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
     pi.port = peer_port;
     pi.packet_num = buffer[1];
     pi.time = getGameClockMiliseconds();
-
-    filetransfer_process_timeout(peer_address, peer_port);
 
     switch ((Pop3NetworkTypes)buffer[1])
     {
@@ -701,14 +716,13 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         filetransfer_client_process_file_part(&buffer[2]);
         break;
     case Pop3NetworkTypes::HOST_SEND_FILE_TRANSFER_COMPLETE:
-        filetransfer_client_process_all_parts_sent();
+        filetransfer_client_process_window_complete(&buffer[2]);
         break;
     case Pop3NetworkTypes::CLIENT_RESEND_FILE_PART:
-        filetransfer_host_process_resend_request(&buffer[2]);
+        filetransfer_host_process_window_ack(&buffer[2]);
         break;
     case Pop3NetworkTypes::CLIENT_RESNET_FILE_PARTS_COMPLETE:
-        filetransfer_host_process_resend_requests_complete();
-        break;
+        break; // no longer used in sliding window protocol
     case Pop3NetworkTypes::CLIENT_FILE_TRANSFER_COMPLETE:
         filetransfer_host_process_client_transfer_successful();
         break;
@@ -723,54 +737,101 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
 
 void Pop3Network::compile_fileparts()
 {
-    // Compile and save fileparts to disk
     size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
-    std::ofstream out(Poco::Path::temp()  + "\\pop.dat" , std::ios::trunc | std::ios::binary);
+    std::ofstream out(Poco::Path::temp() + "\\pop.dat", std::ios::trunc | std::ios::binary);
     if (out.is_open())
     {
-        // -1 so we don't write the last packet as it might not be fully complete.
-        for (int i = 0; i < number_of_parts - 1; i++)
-        {
-            out.write(&FT.FilePartsRecv[i].data[0], sizeof(FT.FilePartsRecv[i].data));
-        }
+        for (size_t i = 0; i + 1 < number_of_parts; i++)
+            out.write(&FT.FilePartsRecv[static_cast<unsigned int>(i)].data[0], sizeof(FT.FilePartsRecv[0].data));
 
-        int final_part = number_of_parts - 1;
+        unsigned int final_part = static_cast<unsigned int>(number_of_parts - 1);
         ASSERT(FT.FilePartsRecv.count(final_part));
-
-        // Calculate last part size.
-        auto size_without_final_part = (number_of_parts - 1) * PART_PACKET_DATA_SIZE;
-        auto size_of_final_part = FT.FileHeader.file_size - size_without_final_part;
+        auto size_of_final_part = FT.FileHeader.file_size - (number_of_parts - 1) * PART_PACKET_DATA_SIZE;
         out.write(&FT.FilePartsRecv[final_part].data[0], size_of_final_part);
         out.close();
     }
-
     FT.FilePartsRecv.clear();
 }
+
+// ---------------------------------------------------------------------------
+//  Sliding-window file transfer implementation
+// ---------------------------------------------------------------------------
 
 void Pop3Network::filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer)
 {
     FT.LastContactTime = GetCurrentMs();
-    FT.FileHeader = *reinterpret_cast<const PopTBFileStartPacket*>(&buffer[0]);
-    Send(peer_address, peer_port, Pop3NetworkTypes::CLIENT_READY_FOR_FILE_TRANSFER);
-    FT.Status = FileTransferStatus::Client_Waiting_On_Host_To_Start_Sending_File_Parts;
+    FT.FileHeader = *reinterpret_cast<const PopTBFileStartPacket*>(buffer);
     FT.peer_address = peer_address;
     FT.peer_port = peer_port;
+    FT.FilePartsRecv.clear();
     FT.SleepTimer = 0;
+    FT.Status = FileTransferStatus::Client_Waiting_On_Host_To_Start;
+
+    Pop3Debug::trace("File transfer starting: %s (%zu bytes)", FT.FileHeader.file_name, FT.FileHeader.file_size);
+    Send(peer_address, peer_port, Pop3NetworkTypes::CLIENT_READY_FOR_FILE_TRANSFER);
 }
 
 void Pop3Network::filetransfer_host_process_client_ready(const char * peer_address, UWORD peer_port)
 {
     FT.LastContactTime = GetCurrentMs();
-    FT.Status = FileTransferStatus::Host_Transfering_Data;
     FT.peer_address = peer_address;
     FT.peer_port = peer_port;
-    for (const auto & fp : FT.FileParts)
+    FT.window_start = 0;
+    filetransfer_host_send_window();
+}
+
+void Pop3Network::filetransfer_host_send_window()
+{
+    FT.Status = FileTransferStatus::Host_Sending_Window;
+    unsigned int window_end = (std::min)(FT.window_start + FT.window_size, FT.total_parts);
+
+    for (unsigned int i = FT.window_start; i < window_end; i++)
     {
-        Send(-1, FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::HOST_SEND_FILE_PART, reinterpret_cast<const char*>(&fp), sizeof(fp));
-        Poco::Thread::sleep(1);
+        Send(-1, FT.peer_address.c_str(), FT.peer_port,
+            Pop3NetworkTypes::HOST_SEND_FILE_PART,
+            reinterpret_cast<const char*>(&FT.FileParts[i]), sizeof(PopTBFilePartPacket));
+        Poco::Thread::sleep(FT_INTER_PACKET_SLEEP_MS);
     }
-    Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::HOST_SEND_FILE_TRANSFER_COMPLETE);
-    FT.Status = FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer;
+
+    PopTBWindowComplete wc;
+    wc.window_start = FT.window_start;
+    wc.window_end = window_end;
+    Send(-1, FT.peer_address.c_str(), FT.peer_port,
+        Pop3NetworkTypes::HOST_SEND_FILE_TRANSFER_COMPLETE,
+        reinterpret_cast<char*>(&wc), sizeof(wc));
+
+    FT.window_send_time = GetCurrentMs();
+    FT.Status = FileTransferStatus::Host_Waiting_On_Window_Ack;
+    Pop3Debug::trace("Window sent [%u..%u) size=%u", FT.window_start, window_end, FT.window_size);
+}
+
+void Pop3Network::filetransfer_host_send_missing(const unsigned int * bitmap, unsigned int ws, unsigned int wsize)
+{
+    FT.Status = FileTransferStatus::Host_Sending_Window;
+    unsigned int window_end = (std::min)(ws + wsize, FT.total_parts);
+
+    for (unsigned int i = ws; i < window_end; i++)
+    {
+        unsigned int offset = i - ws;
+        bool received = (bitmap[offset / 32] >> (offset % 32)) & 1;
+        if (!received)
+        {
+            Send(-1, FT.peer_address.c_str(), FT.peer_port,
+                Pop3NetworkTypes::HOST_SEND_FILE_PART,
+                reinterpret_cast<const char*>(&FT.FileParts[i]), sizeof(PopTBFilePartPacket));
+            Poco::Thread::sleep(FT_INTER_PACKET_SLEEP_MS);
+        }
+    }
+
+    PopTBWindowComplete wc;
+    wc.window_start = ws;
+    wc.window_end = window_end;
+    Send(-1, FT.peer_address.c_str(), FT.peer_port,
+        Pop3NetworkTypes::HOST_SEND_FILE_TRANSFER_COMPLETE,
+        reinterpret_cast<char*>(&wc), sizeof(wc));
+
+    FT.window_send_time = GetCurrentMs();
+    FT.Status = FileTransferStatus::Host_Waiting_On_Window_Ack;
 }
 
 void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
@@ -779,154 +840,206 @@ void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
         return;
 
     FT.LastContactTime = GetCurrentMs();
-    size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
-    auto fp_ptr = reinterpret_cast<const PopTBFilePartPacket*>(&buffer[0]);
+    auto fp_ptr = reinterpret_cast<const PopTBFilePartPacket*>(buffer);
 
-    if (!FT.FilePartsRecv.count(fp_ptr->packet_num)) // Check if we already have this packet.
+    if (!FT.FilePartsRecv.count(fp_ptr->packet_num))
         FT.FilePartsRecv[fp_ptr->packet_num] = *fp_ptr;
 
-    if (FT.FilePartsRecv.size() == number_of_parts)
-    {
-        FT.Status = FileTransferStatus::Transfer_Complete;
-        Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_FILE_TRANSFER_COMPLETE);
-
-        // Compile FileParts.
-        compile_fileparts();
-
-        memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
-        FT.FileParts.clear();
-        FT.FilePartsToBeResent.clear();
-        FT.LastContactTime = 0;
-        FT.peer_address.clear();
-        FT.peer_port = 0;
-    }
-    else
-        FT.Status = FileTransferStatus::Client_Waiting_On_Host_Parts_To_Finish;
+    FT.Status = FileTransferStatus::Client_Receiving_Window;
 }
 
-#define PACKET_RETRY_PEN (05)
-void Pop3Network::filetransfer_client_process_all_parts_sent()
+void Pop3Network::filetransfer_client_process_window_complete(const char * buffer)
 {
     if (FT.Status == FileTransferStatus::Transfer_Complete)
         return;
 
-    if ((GetCurrentMs() - FT.LastContactTime) < 100)
+    FT.LastContactTime = GetCurrentMs();
+
+    auto wc = reinterpret_cast<const PopTBWindowComplete*>(buffer);
+    unsigned int ws = wc->window_start;
+    unsigned int we = wc->window_end;
+    unsigned int wsize = we - ws;
+
+    size_t total_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
+
+    // Check if transfer is fully complete
+    if (FT.FilePartsRecv.size() == total_parts)
+    {
+        FT.Status = FileTransferStatus::Transfer_Complete;
+        Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_FILE_TRANSFER_COMPLETE);
+        compile_fileparts();
+        if (GamePtrs.FileTransfer_Callback)
+            GamePtrs.FileTransfer_Callback();
+        memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
+        FT.FileParts.clear();
+        FT.peer_address.clear();
+        FT.peer_port = 0;
+        Pop3Debug::trace("File transfer complete!");
         return;
-
-    FT.LastContactTime = GetCurrentMs();
-
-    // Now we check if any fileparts need to be resent.
-    size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
-
-    bool packet_resent = false;
-
-    FT.Status = FileTransferStatus::Client_Sending_Resend_Requests;
-
-    std::vector<int> missingPackets;
-
-    // We need some packets to be resent.
-    for (int i = 0; i < number_of_parts; i++)
-        if (!FT.FilePartsRecv.count(i))
-            missingPackets.push_back(i);
-
-    FT.SleepTimer += static_cast<ULONGLONG>((missingPackets.size() / static_cast<double>(number_of_parts)) * PACKET_RETRY_PEN);
-
-    for (const auto & pkt : missingPackets)
-    {
-        PopTBFilePartRequest part;
-        part.packet_num = pkt;
-        packet_resent = true;
-        Send(-1, FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_RESEND_FILE_PART, reinterpret_cast<char*>(&part), sizeof(PopTBFilePartRequest));
-        if (FT.SleepTimer)
-            Poco::Thread::sleep(static_cast<long>(FT.SleepTimer));
     }
 
-    if (packet_resent)
+    // Build bitmap ACK for this window
+    PopTBWindowAck ack = {};
+    ack.window_start = ws;
+    ack.window_size = wsize;
+
+    for (unsigned int i = ws; i < we && i < total_parts; i++)
     {
-        FT.Status = FileTransferStatus::Client_Waiting_On_Host_Parts_To_Finish;
-        Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_RESNET_FILE_PARTS_COMPLETE);
+        unsigned int offset = i - ws;
+        if (FT.FilePartsRecv.count(i))
+            ack.received_bitmap[offset / 32] |= (1u << (offset % 32));
     }
-    else FT.Status = FileTransferStatus::Transfer_Complete;
+
+    unsigned int bitmap_ints = (wsize + 31) / 32;
+    DWORD payload_size = static_cast<DWORD>(sizeof(unsigned int) * 2 + sizeof(unsigned int) * bitmap_ints);
+    Send(-1, FT.peer_address.c_str(), FT.peer_port,
+        Pop3NetworkTypes::CLIENT_RESEND_FILE_PART,
+        reinterpret_cast<char*>(&ack), payload_size);
+
+    FT.Status = FileTransferStatus::Client_Receiving_Window;
 }
 
-void Pop3Network::filetransfer_host_process_resend_request(const char * buffer)
+void Pop3Network::filetransfer_host_process_window_ack(const char * buffer)
 {
     FT.LastContactTime = GetCurrentMs();
-    auto fp_ptr = reinterpret_cast<const PopTBFilePartRequest*>(&buffer[0]);
-    FT.FilePartsToBeResent.push_back(*fp_ptr);
-    FT.Status = FileTransferStatus::Host_Waiting_On_Client_To_Finish_Resend_Requests;
-}
 
-void Pop3Network::filetransfer_host_process_resend_requests_complete()
-{
-    FT.LastContactTime = GetCurrentMs();
-    FT.Status = FileTransferStatus::Host_Transfering_Data;
-    FT.SleepTimer += static_cast<ULONGLONG>((FT.FilePartsToBeResent.size() / static_cast<double>(FT.FileParts.size())) * PACKET_RETRY_PEN);
-    for (const auto & f : FT.FilePartsToBeResent)
+    auto ack = reinterpret_cast<const PopTBWindowAck*>(buffer);
+    unsigned int ws = ack->window_start;
+    unsigned int wsize = ack->window_size;
+    unsigned int window_end = (std::min)(ws + wsize, FT.total_parts);
+
+    // Count missing
+    unsigned int missing = 0;
+    for (unsigned int i = ws; i < window_end; i++)
     {
-        Send(-1, FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::HOST_SEND_FILE_PART, reinterpret_cast<char*>(&FT.FileParts[f.packet_num]), sizeof(FT.FileParts[f.packet_num]));
-        if (FT.SleepTimer)
-            Poco::Thread::sleep(static_cast<long>(FT.SleepTimer));
+        unsigned int offset = i - ws;
+        bool received = (ack->received_bitmap[offset / 32] >> (offset % 32)) & 1;
+        if (!received) missing++;
     }
-    FT.FilePartsToBeResent.clear();
-    Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::HOST_SEND_FILE_TRANSFER_COMPLETE);
-    FT.Status = FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer;
+
+    Pop3Debug::trace("Window ACK [%u..%u): %u/%u received", ws, window_end, wsize - missing, wsize);
+
+    if (missing == 0)
+    {
+        // Window fully received — advance
+        FT.retry_count = 0;
+
+        // Grow window on success
+        if (FT.window_size < FT_MAX_WINDOW_SIZE)
+            FT.window_size = (std::min)((unsigned int)FT_MAX_WINDOW_SIZE, FT.window_size + 8);
+
+        FT.window_start = window_end;
+
+        if (FT.window_start >= FT.total_parts)
+        {
+            FT.Status = FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer;
+            Pop3Debug::trace("All windows sent, waiting for client confirmation");
+            return;
+        }
+
+        filetransfer_host_send_window();
+    }
+    else
+    {
+        FT.retry_count++;
+
+        // Shrink window on loss
+        float loss_ratio = static_cast<float>(missing) / wsize;
+        if (loss_ratio > 0.5f)
+            FT.window_size = (std::max)((unsigned int)FT_MIN_WINDOW_SIZE, FT.window_size / 2);
+        else if (loss_ratio > 0.1f)
+            FT.window_size = (std::max)((unsigned int)FT_MIN_WINDOW_SIZE, FT.window_size - 4);
+
+        Pop3Debug::trace("Retransmitting %u missing packets (window_size now %u)", missing, FT.window_size);
+        filetransfer_host_send_missing(ack->received_bitmap, ws, wsize);
+    }
 }
 
 void Pop3Network::filetransfer_host_process_client_transfer_successful()
 {
-    // Host.
-    FT.LastContactTime = GetCurrentMs();
+    FT.LastContactTime = 0;
     memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
     FT.FileParts.clear();
     FT.FilePartsRecv.clear();
-    FT.FilePartsToBeResent.clear();
-    FT.LastContactTime = 0;
     FT.peer_address.clear();
     FT.peer_port = 0;
     FT.Status = FileTransferStatus::Transfer_Complete;
-}
-
-void Pop3Network::filetransfer_process_timeout(const char * peer_address, UWORD peer_port)
-{
-    if (FT.Status != FileTransferStatus::Ready && FT.Status != FileTransferStatus::Transfer_Complete)
-    {
-        if (FT.peer_address == peer_address && FT.peer_port == peer_port)
-        {
-            if ((GetCurrentMs() - FT.LastContactTime) > 1000)
-            {
-                FT.LastContactTime = GetCurrentMs();
-                switch (FT.Status)
-                {
-                case FileTransferStatus::Host_Waiting_On_Client_Ack:
-                    Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER, reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
-                    break;
-                case FileTransferStatus::Host_Waiting_On_Client_Resend_Complete:
-                case FileTransferStatus::Host_Waiting_On_Client_To_Finish_Resend_Requests:
-                case FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer:
-                    Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_REQUESTING_UPDATE_ON_TRANSFER, nullptr, 0);
-                    break;
-                }
-            }
-        }
-    }
+    Pop3Debug::trace("Host: client confirmed transfer complete");
 }
 
 void Pop3Network::filetransfer_host_requesting_update()
 {
+    FT.LastContactTime = GetCurrentMs();
     switch (FT.Status)
     {
     case FileTransferStatus::Transfer_Complete:
-        Send(-1, FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_FILE_TRANSFER_COMPLETE, reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
+        Send(-1, FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_FILE_TRANSFER_COMPLETE, nullptr, 0);
         break;
-    case FileTransferStatus::Client_Waiting_On_Host_To_Start_Sending_File_Parts:
+    case FileTransferStatus::Client_Waiting_On_Host_To_Start:
         Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_READY_FOR_FILE_TRANSFER);
         break;
-    case FileTransferStatus::Client_Waiting_On_Host_Parts_To_Finish:
-        filetransfer_client_process_all_parts_sent();
+    default:
         break;
     }
-    FT.LastContactTime = GetCurrentMs();
+}
+
+void Pop3Network::filetransfer_tick()
+{
+    if (FT.Status == FileTransferStatus::Ready || FT.Status == FileTransferStatus::Transfer_Complete)
+        return;
+
+    ULONGLONG now = GetCurrentMs();
+
+    switch (FT.Status)
+    {
+    case FileTransferStatus::Host_Waiting_On_Window_Ack:
+        if ((now - FT.window_send_time) > FT_WINDOW_TIMEOUT_MS)
+        {
+            FT.retry_count++;
+            if (FT.retry_count > FT_MAX_RETRIES)
+            {
+                Pop3Debug::trace("File transfer aborted: too many retries");
+                FT.Status = FileTransferStatus::Ready;
+                return;
+            }
+            FT.window_size = (std::max)((unsigned int)FT_MIN_WINDOW_SIZE, FT.window_size / 2);
+            Pop3Debug::trace("Window ACK timeout, resending window (size=%u, retry=%u)", FT.window_size, FT.retry_count);
+            filetransfer_host_send_window();
+        }
+        break;
+
+    case FileTransferStatus::Host_Waiting_On_Client_Ack:
+        if ((now - FT.LastContactTime) > 2000)
+        {
+            FT.LastContactTime = now;
+            Send(-1, FT.peer_address.c_str(), FT.peer_port,
+                Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER,
+                reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
+        }
+        break;
+
+    case FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer:
+        if ((now - FT.LastContactTime) > FT_WINDOW_TIMEOUT_MS)
+        {
+            FT.LastContactTime = now;
+            Send(-1, FT.peer_address.c_str(), FT.peer_port,
+                Pop3NetworkTypes::HOST_REQUESTING_UPDATE_ON_TRANSFER, nullptr, 0);
+        }
+        break;
+
+    case FileTransferStatus::Client_Receiving_Window:
+    case FileTransferStatus::Client_Waiting_On_Host_To_Start:
+        if ((now - FT.LastContactTime) > FT_WINDOW_TIMEOUT_MS)
+        {
+            FT.LastContactTime = now;
+            Send(FT.peer_address.c_str(), FT.peer_port,
+                Pop3NetworkTypes::HOST_REQUESTING_UPDATE_ON_TRANSFER);
+        }
+        break;
+
+    default:
+        break;
+    }
 }
 
 void Pop3Network::Send(const char * peer_address, UWORD peer_port, Pop3NetworkTypes type) const
@@ -941,6 +1054,7 @@ void Pop3Network::Send(int to_id, Pop3NetworkTypes type)
 
 void Pop3Network::Send(int to_id, Pop3NetworkTypes type, const char * buffer, DWORD buf_size)
 {
+    Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
         if ((player.second.inUse) && (// This should be first in the IF statement.			

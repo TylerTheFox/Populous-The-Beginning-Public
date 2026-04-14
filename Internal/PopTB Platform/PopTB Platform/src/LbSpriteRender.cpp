@@ -157,7 +157,7 @@ void LbDisplayPrepare()
 	lbDisplay.GraphicsScreenWidth = currSurface->GetSize().Width;
 	lbDisplay.GraphicsScreenHeight = currSurface->GetSize().Height;
 
-	// Clipping
+	// Graphics window = viewport (used for coordinate translation: view-local -> absolute).
 	lbDisplay.GraphicsWindowX = _lbCurrentViewPort.Left;
 	lbDisplay.GraphicsWindowY = _lbCurrentViewPort.Top;
 	lbDisplay.GraphicsWindowWidth = _lbCurrentViewPort.Width();
@@ -188,6 +188,7 @@ void LbDisplayPrepare()
  */
 TbError rangeChecking(long x, long y, SINT GraphicsWindowX, SINT GraphicsWindowY, SINT GraphicsWindowWidth, SINT GraphicsWindowHeight, const TbSprite *spr, struct DrawRetParams& dp)
 {
+	// Input (x,y) is viewport-relative. Convert to absolute render-area coords.
 	x += GraphicsWindowX;
 	y += GraphicsWindowY;
 	short sprWd = spr->Width;
@@ -199,53 +200,29 @@ TbError rangeChecking(long x, long y, SINT GraphicsWindowX, SINT GraphicsWindowY
 		return LB_OK_NO_DRAW;
 	}
 
-	//Coordinates range checking - x coords
-	int delta;
-	delta = GraphicsWindowX - x;
-	if (delta <= 0)
-	{
-		dp.left = 0;
-	}
-	else
-	{
-		if (sprWd <= delta)
-			return LB_OK_NO_DRAW;
-		dp.left = delta;
-	}
-	delta = x + sprWd - (GraphicsWindowWidth + GraphicsWindowX);
-	if (delta <= 0)
-	{
-		dp.right = sprWd;
-	}
-	else
-	{
-		if (sprWd <= delta)
-			return LB_OK_NO_DRAW;
-		dp.right = sprWd - delta;
-	}
-	//Coordinates range checking - y coords
-	delta = GraphicsWindowY - y;
-	if (delta <= 0)
-	{
-		dp.top = 0;
-	}
-	else
-	{
-		if (sprHt <= delta)
-			return LB_OK_NO_DRAW;
-		dp.top = delta;
-	}
-	delta = y + sprHt - (GraphicsWindowHeight + GraphicsWindowY);
-	if (y + sprHt - (GraphicsWindowHeight + GraphicsWindowY) <= 0)
-	{
-		dp.btm = sprHt;
-	}
-	else
-	{
-		if (sprHt <= delta)
-			return LB_OK_NO_DRAW;
-		dp.btm = sprHt - delta;
-	}
+	// Clip against the render area (full drawable surface) — NOT the viewport.
+	// Matches the original Bullfrog library behaviour where sprite clipping
+	// uses the clip rectangle (effectively the full surface), independent of
+	// the active viewport.  This allows tooltips/UI popups drawn with absolute
+	// screen coords to extend outside a narrowed game-area viewport (e.g.,
+	// when the sidebar is visible) without being over-clipped.
+	const SINT clipLeft   = 0;
+	const SINT clipTop    = 0;
+	const SINT clipRight  = lbDisplay.GraphicsScreenWidth;
+	const SINT clipBottom = lbDisplay.GraphicsScreenHeight;
+
+	// Early rejection — sprite entirely outside clip bounds
+	if (x + sprWd <= clipLeft || x >= clipRight)
+		return LB_OK_NO_DRAW;
+	if (y + sprHt <= clipTop || y >= clipBottom)
+		return LB_OK_NO_DRAW;
+
+	// Clip sprite to visible sub-rectangle (in sprite-local coords)
+	dp.left  = (x < clipLeft)            ? clipLeft - x          : 0;
+	dp.right = (x + sprWd > clipRight)   ? clipRight - x         : sprWd;
+	dp.top   = (y < clipTop)             ? clipTop - y           : 0;
+	dp.btm   = (y + sprHt > clipBottom)  ? clipBottom - y        : sprHt;
+
 	return LB_OK;
 }
 
@@ -1414,11 +1391,11 @@ static TbError LbSpriteDrawScalingDown(UBYTE *outbuf, int scanline, int outheigh
 							} else if constexpr (Blend == SprBlend::Remap) {
 								*out_end = table[(unsigned char)*sprdata];
 							} else if constexpr (Blend == SprBlend::Trans1) {
-								unsigned int pxmap = ((*sprdata) << 8);
+								unsigned int pxmap = ((unsigned char)(*sprdata) << 8);
 								pxmap = (pxmap & ~0x00ff) | ((*out_end));
 								*out_end = table[pxmap];
 							} else { // Trans2
-								unsigned int pxmap = ((*sprdata));
+								unsigned int pxmap = ((unsigned char)(*sprdata));
 								pxmap = (pxmap & ~0xff00) | ((*out_end) << 8);
 								*out_end = table[pxmap];
 							}
@@ -1613,9 +1590,9 @@ static TbError LbSpriteDrawScalingUp(UBYTE *outbuf, int scanline, int outheight,
 								{
 									unsigned int pxmap;
 									if constexpr (Blend == SprBlend::Trans1)
-										pxmap = ((*sprdata) << 8);
+										pxmap = ((unsigned char)(*sprdata) << 8);
 									else
-										pxmap = ((*sprdata));
+										pxmap = ((unsigned char)(*sprdata));
 									for (; xdup > 0; xdup--)
 									{
 										if constexpr (Blend == SprBlend::Trans1)

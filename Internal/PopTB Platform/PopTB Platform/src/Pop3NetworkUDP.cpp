@@ -1,9 +1,11 @@
+#include "Pop3Platform_Win32.h"
 #include "Pop3NetworkUDP.h"
 #include "Pop3Debug.h"
 #include "Pop3App.h"
 #include "Pop3MajorFault.h"
 
 #include <Poco/Net/NetException.h>
+#include <Poco/Exception.h>
 #include <Poco/Net/SocketAddress.h>
 #include <Poco/Net/DatagramSocket.h>
 #include <Poco/Format.h>
@@ -39,7 +41,7 @@ void Pop3NetworkUDP::RunServer()
         auto & local_port = *GamePtrs.LocalPort;
         bool first_connection = true;
 
-		_set_se_translator(Pop3App::_Pop3_SEH);
+		_set_se_translator((_se_translator_function)Pop3App::_Pop3_SEH);
 		set_terminate(Pop3App::_Pop3_Term);
 
         if (_mode == SM_JOINING)
@@ -60,24 +62,27 @@ void Pop3NetworkUDP::RunServer()
             am_host = true;
         }
 
+        // Always bind instead of connect — connect() on UDP filters incoming
+        // packets to only the connected address, which breaks if the host's
+        // outbound port changes due to NAT rebinding.
         if (_mode == SM_HOSTING)
             dgs.bind(Poco::Net::SocketAddress(local_port));
-        else dgs.connect(Poco::Net::SocketAddress(ipaddr, local_port));
+        else
+            dgs.bind(Poco::Net::SocketAddress(local_port));
 
         // Fuck Winsock, ignore all those fucking connection reset errors.
         BOOL bNewBehavior = FALSE;
         DWORD dwBytesReturned = 0;
         WSAIoctl(dgs.getSocket(), SIO_UDP_CONNRESET, &bNewBehavior, sizeof bNewBehavior, NULL, 0, &dwBytesReturned, NULL, NULL);
 
+        // Set receive timeout so the loop can tick file transfers even without incoming packets
+        dgs.setReceiveTimeout(Poco::Timespan(0, 100000)); // 100ms
+
         while (!(*GamePtrs.GnsiFlags & GNS_QUITTING) && !Pop3App::isQuitting())
         {
             try
             {
                 Poco::Net::SocketAddress sender;
-                //clear the buffer by filling null, it might have previously received data
-                memset(buf, 0, MAX_PACKET_SIZE);
-
-                // Blocking
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
                 if ((*GamePtrs.GnsiFlags & GNS_QUITTING) && Pop3App::isQuitting())
                     return;
@@ -93,12 +98,18 @@ void Pop3NetworkUDP::RunServer()
                     ParsePacket(buf, recv_len, sender.host().toString().c_str(), sender.port());
                 }
             }
+            catch (const Poco::TimeoutException&)
+            {
+                // No packet received — that's fine, just tick below
+            }
             catch (const Poco::Exception& e)
             {
                 if (e.code() == WSANOTINITIALISED)
                     return;
-                // Do nothing
             }
+
+            // Tick file transfer timeouts/retransmissions independently of packet arrival
+            filetransfer_tick();
         }
     }
     catch (const Poco::Exception &)
@@ -136,15 +147,15 @@ void Pop3NetworkUDP::Send(int to_pn, const char * peer_address, UWORD peer_port,
         if (type == Pop3NetworkTypes::POP_DATA)
             pi.extra_data = Poco::format("%d", +static_cast<char>(buffer[1]));
 
-        static char buf[MAX_PACKET_SIZE];
-        buf[0] = POP_PACKET_TYPE;
-        buf[1] = static_cast<BYTE>(type);
-        if (buffer && buf_size > 0) memcpy(&buf[2], buffer, buf_size);
-        auto ret = dgs.sendTo(buf, buf_size + 2, Poco::Net::SocketAddress(peer_address, peer_port));
+        char sendbuf[MAX_PACKET_SIZE];
+        sendbuf[0] = POP_PACKET_TYPE;
+        sendbuf[1] = static_cast<BYTE>(type);
+        if (buffer && buf_size > 0) memcpy(&sendbuf[2], buffer, buf_size);
+        auto ret = dgs.sendTo(sendbuf, buf_size + 2, Poco::Net::SocketAddress(peer_address, peer_port));
 
         if (ret == SOCKET_ERROR)
         {
-            DebugBreak();
+            Pop3Debug::trace("Send failed: SOCKET_ERROR to %s:%d", peer_address, peer_port);
         }
 
         add_packet_info(pi);

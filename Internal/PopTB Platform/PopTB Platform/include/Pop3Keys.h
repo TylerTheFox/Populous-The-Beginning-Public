@@ -129,20 +129,21 @@ typedef enum Pop3InputKey
 #define LB_KEY_MOUSE_RIGHT      LB_KEY_MOUSE1
 #define LB_KEY_MOUSE_MIDDLE     LB_KEY_MOUSE2
 #else
-#include <windows.h>
+// Win32 path: VK_* constants inlined as integers so this header
+// does not need <Windows.h>.  Values match the Windows SDK exactly.
 #define MOUSE_ENUM_OFFSET 256
 typedef enum Pop3InputKey
 {
     LB_KEY_NONE = 0,
 
     // Keyboard codes
-    LB_KEY_ESC = VK_ESCAPE,
-    LB_KEY_MINUS = VK_OEM_MINUS,
+    LB_KEY_ESC = 0x1B,           // VK_ESCAPE
+    LB_KEY_MINUS = 0xBD,         // VK_OEM_MINUS
     LB_KEY_NUM_MINUS = LB_KEY_MINUS,
-    LB_KEY_EQUAL = VK_OEM_PLUS,
+    LB_KEY_EQUAL = 0xBB,         // VK_OEM_PLUS
     LB_KEY_NUM_PLUS = LB_KEY_EQUAL,
-    LB_KEY_BACKSPACE = VK_BACK,
-    LB_KEY_TAB = VK_TAB,
+    LB_KEY_BACKSPACE = 0x08,     // VK_BACK
+    LB_KEY_TAB = 0x09,           // VK_TAB
 
     LB_KEY_0 = 0x30,
     LB_KEY_1,
@@ -182,24 +183,24 @@ typedef enum Pop3InputKey
     LB_KEY_Y,
     LB_KEY_Z,
 
-    LB_KEY_LSBRACKET = VK_OEM_4,
-    LB_KEY_RSBRACKET = VK_OEM_6,
-    LB_KEY_RETURN = VK_RETURN,
+    LB_KEY_LSBRACKET = 0xDB,    // VK_OEM_4
+    LB_KEY_RSBRACKET = 0xDE,    // VK_OEM_6
+    LB_KEY_RETURN = 0x0D,       // VK_RETURN
     LB_KEY_NUM_ENTER = LB_KEY_RETURN,
-    LB_KEY_LCONTROL = VK_LCONTROL,
-    LB_KEY_COLON = VK_OEM_1,
-    LB_KEY_QUOTE = VK_OEM_8,
-    LB_KEY_QUOTE2 = VK_OEM_3,
-    LB_KEY_LSHIFT = VK_LSHIFT,
-    LB_KEY_HASH = VK_OEM_6,
-    LB_KEY_COMMA = VK_OEM_COMMA,
-    LB_KEY_DOT = VK_OEM_PERIOD,
+    LB_KEY_LCONTROL = 0xA2,     // VK_LCONTROL
+    LB_KEY_COLON = 0xBA,        // VK_OEM_1
+    LB_KEY_QUOTE = 0xDF,        // VK_OEM_8
+    LB_KEY_QUOTE2 = 0xC0,       // VK_OEM_3
+    LB_KEY_LSHIFT = 0xA0,       // VK_LSHIFT
+    LB_KEY_HASH = 0xDE,         // VK_OEM_6
+    LB_KEY_COMMA = 0xBC,        // VK_OEM_COMMA
+    LB_KEY_DOT = 0xBE,          // VK_OEM_PERIOD
     LB_KEY_NUM_DOT = LB_KEY_DOT,
-    LB_KEY_SLASH = VK_OEM_2,
-    LB_KEY_RSHIFT = VK_RSHIFT,
-    LB_KEY_LALT = VK_LMENU,
-    LB_KEY_SPACE = VK_SPACE,
-    LB_KEY_CAPS = VK_CAPITAL,
+    LB_KEY_SLASH = 0xBF,        // VK_OEM_2
+    LB_KEY_RSHIFT = 0xA1,       // VK_RSHIFT
+    LB_KEY_LALT = 0xA4,         // VK_LMENU
+    LB_KEY_SPACE = 0x20,        // VK_SPACE
+    LB_KEY_CAPS = 0x14,         // VK_CAPITAL
 
     LB_KEY_F1 = 0x70,
     LB_KEY_F2,
@@ -214,7 +215,7 @@ typedef enum Pop3InputKey
     LB_KEY_F11,
     LB_KEY_F12,
 
-    LB_KEY_NUM_0 = VK_NUMPAD0,
+    LB_KEY_NUM_0 = 0x60,        // VK_NUMPAD0
     LB_KEY_NUM_INSERT = LB_KEY_NUM_0,
     LB_KEY_NUM_1,
     LB_KEY_NUM_2,
@@ -225,28 +226,28 @@ typedef enum Pop3InputKey
     LB_KEY_NUM_7,
     LB_KEY_NUM_8,
     LB_KEY_NUM_9,
-    LB_KEY_NUM_SLASH = VK_DIVIDE,
+    LB_KEY_NUM_SLASH = 0x6F,    // VK_DIVIDE
 
-    LB_KEY_NUM_ASTERISK = VK_MULTIPLY,
-    LB_KEY_NUM_LOCK = VK_NUMLOCK,
-    LB_KEY_SCROLL_LOCK = VK_SCROLL,
-    LB_KEY_BACKSLASH = VK_OEM_5,
+    LB_KEY_NUM_ASTERISK = 0x6A, // VK_MULTIPLY
+    LB_KEY_NUM_LOCK = 0x90,     // VK_NUMLOCK
+    LB_KEY_SCROLL_LOCK = 0x91,  // VK_SCROLL
+    LB_KEY_BACKSLASH = 0xDC,    // VK_OEM_5
 
-    LB_KEY_RCONTROL = VK_RCONTROL,
-    LB_KEY_PRINT_SCR = VK_SNAPSHOT,
-    LB_KEY_RALT = VK_RMENU,
-    LB_KEY_BREAK = VK_PAUSE,
+    LB_KEY_RCONTROL = 0xA3,     // VK_RCONTROL
+    LB_KEY_PRINT_SCR = 0x2C,    // VK_SNAPSHOT
+    LB_KEY_RALT = 0xA5,         // VK_RMENU
+    LB_KEY_BREAK = 0x13,        // VK_PAUSE
     LB_KEY_PAUSE = LB_KEY_BREAK,
-    LB_KEY_HOME = VK_HOME,
-    LB_KEY_UP = VK_UP,
-    LB_KEY_PGUP = VK_PRIOR,
-    LB_KEY_LEFT = VK_LEFT,
-    LB_KEY_RIGHT = VK_RIGHT,
-    LB_KEY_END = VK_END,
-    LB_KEY_DOWN = VK_DOWN,
-    LB_KEY_PGDN = VK_NEXT,
-    LB_KEY_INSERT = VK_INSERT,
-    LB_KEY_DELETE = VK_DELETE,
+    LB_KEY_HOME = 0x24,         // VK_HOME
+    LB_KEY_UP = 0x26,           // VK_UP
+    LB_KEY_PGUP = 0x21,         // VK_PRIOR
+    LB_KEY_LEFT = 0x25,         // VK_LEFT
+    LB_KEY_RIGHT = 0x27,        // VK_RIGHT
+    LB_KEY_END = 0x23,          // VK_END
+    LB_KEY_DOWN = 0x28,         // VK_DOWN
+    LB_KEY_PGDN = 0x22,         // VK_NEXT
+    LB_KEY_INSERT = 0x2D,       // VK_INSERT
+    LB_KEY_DELETE = 0x2E,       // VK_DELETE
     LB_KEY_NUM_DELETE = LB_KEY_DELETE,
 
     // Mouse input

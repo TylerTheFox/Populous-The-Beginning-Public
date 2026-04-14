@@ -1,6 +1,6 @@
 // LbAppData.cpp - Application data management
 // Reimplemented from IDA disassembly of Bullfrog Library 8.1
-#include <windows.h>
+#include "Pop3Platform_Win32.h"
 #include "Pop3Types.h"
 #include <LbError.h>
 #include <Pop3ScreenMode.h>

@@ -1,7 +1,7 @@
 // LbSCBack.cpp - System event callback implementation
 // Reimplemented from IDA disassembly of Bullfrog Library 8.1
 #include "LbSCBack.h"
-#include <windows.h>
+#include "Pop3Platform_Win32.h"
 
 // Global system event callback instance
 _LbSystemEventCallback _LbGCBS;

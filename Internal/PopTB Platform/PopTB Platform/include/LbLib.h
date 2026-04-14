@@ -1,7 +1,6 @@
 #pragma once
 // Do this to set up any necessary defines (i.e. _LB_DEBUG)
 #include    "Pop3Types.h"
-#include <Windows.h>
 #include <stdio.h>
 
 #if defined(_AFXDLL)

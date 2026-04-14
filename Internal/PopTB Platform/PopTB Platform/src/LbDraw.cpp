@@ -286,31 +286,36 @@ void LbDraw_SetClipRect(const Pop3Rect *clipwindow)
 {
     ASSERTMSG(_lbpCurrentRA, _LBSTR("LbDraw_SetClipRect: No current render area"));
 
-    Pop3Rect requested;
-    if (clipwindow)
+    // _lbCurrentClipRect is stored in VIEWPORT-LOCAL coordinates (that is the
+    // coord system the renderers use).  The valid drawing area in those coords
+    // is the viewport clamped against the render-area bounds.
+    Pop3Point vpPos  = _lbCurrentViewPort.GetPosition();
+    Pop3Size  vpSize = _lbCurrentViewPort.GetSize();
+    Pop3Rect  raRect(Pop3Rect(_lbpCurrentRA->mSize));
+
+    // Compute the visible portion of the viewport in RA-absolute coords
+    Pop3Rect visibleInRa = _lbCurrentViewPort;
+    if (!LbRect_Intersection(&visibleInRa, &raRect))
     {
-        requested = *clipwindow;
-        LbRect_Normalise(&requested);
-        // Intersect with viewport size
-        Pop3Size vpSize = _lbCurrentViewPort.GetSize();
-        Pop3Rect vpSizeRect(vpSize);
-        if (!LbRect_Intersection(&requested, &vpSizeRect))
-            LbRect_Empty(&requested);
-    }
-    else
-    {
-        // Default: full viewport
-        Pop3Size vpSize = _lbCurrentViewPort.GetSize();
-        requested = Pop3Rect(vpSize);
+        LbRect_Empty(&_lbCurrentClipRect);
+        return;
     }
 
-    // Offset by negative viewport position to get RA-relative coordinates
-    Pop3Point vpPos = _lbCurrentViewPort.GetPosition();
-    Pop3Rect raRect(Pop3Rect(_lbpCurrentRA->mSize));
-    _lbCurrentClipRect = requested;
+    if (clipwindow)
+    {
+        // Caller-supplied clip rect is in RA-absolute coords
+        Pop3Rect requested = *clipwindow;
+        LbRect_Normalise(&requested);
+        if (!LbRect_Intersection(&visibleInRa, &requested))
+        {
+            LbRect_Empty(&_lbCurrentClipRect);
+            return;
+        }
+    }
+
+    // Convert RA-absolute -> viewport-local by subtracting viewport origin
+    _lbCurrentClipRect = visibleInRa;
     LbRect_Offset(&_lbCurrentClipRect, -vpPos.X, -vpPos.Y);
-    if (!LbRect_Intersection(&_lbCurrentClipRect, &raRect))
-        LbRect_Empty(&_lbCurrentClipRect);
 }
 
 // Sets the viewport

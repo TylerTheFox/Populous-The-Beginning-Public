@@ -1,8 +1,6 @@
 #pragma once
-#pragma once
 // Do this to set up any necessary defines (i.e. _LB_DEBUG)
 #include <LbTypes.h>
-#include <Windows.h>
 #include <stdio.h>
 
 #if defined(_AFXDLL)
