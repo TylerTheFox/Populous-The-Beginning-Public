@@ -253,6 +253,30 @@ Pop3WindowHandle Pop3App::getHwnd()
 }
 
 #if !POP3_BUILD_USE_SDL2
+// Clip the OS cursor to this window's client rect (in screen coords) while
+// the window is focused. Released when focus is lost so the user can reach
+// other windows, the taskbar, etc. Called from WM_SETFOCUS / WA_ACTIVE /
+// WM_SIZE / WM_MOVE below. No-op in fullscreen (the clip would cover the
+// whole monitor anyway) and on minimised windows (zero-size client rect).
+static void clipCursorToClientRect(HWND hWnd)
+{
+    if (!hWnd || IsIconic(hWnd)) return;
+    RECT rc;
+    if (!GetClientRect(hWnd, &rc)) return;
+    POINT tl = { rc.left, rc.top };
+    POINT br = { rc.right, rc.bottom };
+    if (!ClientToScreen(hWnd, &tl)) return;
+    if (!ClientToScreen(hWnd, &br)) return;
+    if (br.x <= tl.x || br.y <= tl.y) return;
+    RECT screenRc = { tl.x, tl.y, br.x, br.y };
+    ClipCursor(&screenRc);
+}
+
+static void releaseCursorClip()
+{
+    ClipCursor(nullptr);
+}
+
 Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam)
 {
     HWND hWnd = (HWND)hwnd;
@@ -278,6 +302,7 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
         // Causes issues with D3D which
         // _EventCallback is used for.
         _quitting = true;
+        releaseCursorClip();
         return 0;
         break;
     case WM_CHILDACTIVATE:
@@ -287,10 +312,12 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
     case WM_SETFOCUS:
         _active = true;
         Pop3Input::resetKeys();
+        clipCursorToClientRect(hWnd);
         break;
     case WM_KILLFOCUS:
         _active = false;
         Pop3Input::resetKeys();
+        releaseCursorClip();
         break;
     case WM_SIZE:
         switch (wParam)
@@ -307,6 +334,17 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
         default:;
         }
         Pop3Input::resetKeys();
+        // Client rect may have moved in screen coords — re-clip.
+        if (_active)
+            clipCursorToClientRect(hWnd);
+        else
+            releaseCursorClip();
+        break;
+    case WM_MOVE:
+        // Window moved — the client rect's screen position changed, so the
+        // existing clip is no longer aligned. Re-clip if we still own focus.
+        if (_active)
+            clipCursorToClientRect(hWnd);
         break;
     case WM_ACTIVATE:
         switch (wParam)
@@ -314,13 +352,24 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
         case WA_ACTIVE:
         case WA_CLICKACTIVE:
             _active = true;
+            clipCursorToClientRect(hWnd);
             break;
         case WA_INACTIVE:
             _active = false;
+            releaseCursorClip();
             break;
         default:;
         }
         Pop3Input::resetKeys();
+        break;
+    case WM_ENTERSIZEMOVE:
+        // User grabbed the title bar or a resize edge — release so they can
+        // drag past the window's own rect. We'll re-clip on WM_EXITSIZEMOVE.
+        releaseCursorClip();
+        break;
+    case WM_EXITSIZEMOVE:
+        if (_active)
+            clipCursorToClientRect(hWnd);
         break;
     case WM_SETCURSOR:
         SetCursor(nullptr);
