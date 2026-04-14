@@ -114,41 +114,51 @@ static int CreateScreenModeList()
 {
     LbList_Init(&_lbDisplayModeList);
 
+    // Helper: insert a (w, h, depth) triple if not already present.
+    auto insert_mode = [](DWORD w, DWORD h, DWORD depth)
+    {
+        TbListNode* node = LbList_GetFirst(&_lbDisplayModeList);
+        while (node && !LbList_IsLast(node))
+        {
+            _Pop3ScreenModeFind* entry = (_Pop3ScreenModeFind*)node;
+            if (entry->Info.Width == w &&
+                entry->Info.Height == h &&
+                entry->Info.Depth == depth)
+            {
+                return;
+            }
+            node = LbList_GetNext(node);
+        }
+        _Pop3ScreenModeFind* pNode = new _Pop3ScreenModeFind;
+        if (pNode)
+        {
+            pNode->Info.Width = w;
+            pNode->Info.Height = h;
+            pNode->Info.Depth = depth;
+            LbList_Insert(&_lbDisplayModeList, _lbDisplayModeList.lpLast, (TbListNode*)pNode);
+        }
+    };
+
     DEVMODE dm;
     memset(&dm, 0, sizeof(dm));
     dm.dmSize = sizeof(dm);
 
     for (DWORD i = 0; EnumDisplaySettingsA(NULL, i, &dm); i++)
     {
-        if (dm.dmBitsPerPel != 8 && dm.dmBitsPerPel != 16 && dm.dmBitsPerPel != 32)
-            continue;
-
-        // Check for duplicate
-        bool exists = false;
-        TbListNode* node = LbList_GetFirst(&_lbDisplayModeList);
-        while (node && !LbList_IsLast(node))
+        if (dm.dmBitsPerPel == 8 || dm.dmBitsPerPel == 16 || dm.dmBitsPerPel == 32)
         {
-            _Pop3ScreenModeFind* entry = (_Pop3ScreenModeFind*)node;
-            if (entry->Info.Width == dm.dmPelsWidth &&
-                entry->Info.Height == dm.dmPelsHeight &&
-                entry->Info.Depth == dm.dmBitsPerPel)
-            {
-                exists = true;
-                break;
-            }
-            node = LbList_GetNext(node);
-        }
+            insert_mode(dm.dmPelsWidth, dm.dmPelsHeight, dm.dmBitsPerPel);
 
-        if (!exists)
-        {
-            _Pop3ScreenModeFind* pNode = new _Pop3ScreenModeFind;
-            if (pNode)
-            {
-                pNode->Info.Width = dm.dmPelsWidth;
-                pNode->Info.Height = dm.dmPelsHeight;
-                pNode->Info.Depth = dm.dmBitsPerPel;
-                LbList_Insert(&_lbDisplayModeList, _lbDisplayModeList.lpLast, (TbListNode*)pNode);
-            }
+            // Modern Windows (10/11) does not enumerate 8bpp display modes
+            // through EnumDisplaySettings — the driver stack only exposes
+            // 32bpp (and sometimes 16bpp). The game's internal rasterizer
+            // is 8bpp regardless; Pop3Screen handles the palette->texture
+            // upload at present time. Mirror every reported resolution as
+            // a synthetic 8bpp entry so enum_screen_modes (Utils.cpp) can
+            // still find the 640x480/800x600 it needs without requiring
+            // actual 8bpp support from the display driver.
+            if (dm.dmBitsPerPel != 8)
+                insert_mode(dm.dmPelsWidth, dm.dmPelsHeight, 8);
         }
 
         memset(&dm, 0, sizeof(dm));
