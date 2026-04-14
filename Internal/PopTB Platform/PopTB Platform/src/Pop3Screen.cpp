@@ -206,6 +206,15 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     if (handleDeviceLost())
         return; // Skip this frame, device was just reset
 
+    // If the window has been resized since device creation, the D3D9
+    // backbuffer stays at its original size and Present() scales it to
+    // the new client rect via the driver — that bilinear stretch on top
+    // of our already-point-upscaled quad causes visible shimmer around
+    // fine UI edges (sidebar separators, icon borders). Keep the
+    // backbuffer in sync with the window client rect so Present is 1:1.
+    if (matchWindowSizeToBackbuffer())
+        return; // Skip this frame, device was just reset
+
     // Ensure we have a texture of the right size
     if (!createFramebufferTexture(width, height))
         return;
@@ -412,6 +421,70 @@ void Pop3Screen::getWindowRect(int& left, int& top, int& right, int& bottom)
     right = rc.right;
     bottom = rc.bottom;
 }
+
+bool Pop3Screen::matchWindowSizeToBackbuffer()
+{
+    // Only applies to windowed mode — fullscreen has a fixed backbuffer
+    // negotiated against the display mode, not the client rect.
+    if (!s_pDevice || !s_windowed || !s_hWnd)
+        return false;
+
+    RECT rc;
+    if (!GetClientRect((HWND)s_hWnd, &rc))
+        return false;
+
+    int newW = rc.right - rc.left;
+    int newH = rc.bottom - rc.top;
+
+    // Minimised / zero-sized: don't attempt a zero-dim backbuffer.
+    if (newW <= 0 || newH <= 0)
+        return false;
+
+    if (newW == s_backbufferWidth && newH == s_backbufferHeight)
+        return false; // No change
+
+    // Release all D3DPOOL_DEFAULT resources before Reset.
+    if (s_deviceDeinitCallback)
+        s_deviceDeinitCallback();
+
+    if (s_pFramebufferTex)
+    {
+        s_pFramebufferTex->Release();
+        s_pFramebufferTex = nullptr;
+        // Force a re-create at the next present() so dims are re-taken.
+        s_framebufferWidth = 0;
+        s_framebufferHeight = 0;
+    }
+
+    D3DPRESENT_PARAMETERS pp;
+    ZeroMemory(&pp, sizeof(pp));
+    pp.Windowed = TRUE;
+    pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    pp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    pp.BackBufferWidth = newW;
+    pp.BackBufferHeight = newH;
+    pp.BackBufferCount = 1;
+    pp.hDeviceWindow = (HWND)s_hWnd;
+    pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+    pp.EnableAutoDepthStencil = FALSE;
+
+    HRESULT hr = s_pDevice->Reset(&pp);
+    if (FAILED(hr))
+    {
+        // If reset fails (device lost during resize, driver rejection),
+        // leave state as-is; handleDeviceLost will pick it up next frame.
+        return true;
+    }
+
+    s_backbufferWidth = newW;
+    s_backbufferHeight = newH;
+
+    if (s_deviceInitCallback)
+        s_deviceInitCallback();
+
+    return true; // Skip this frame
+}
+
 
 bool Pop3Screen::handleDeviceLost()
 {

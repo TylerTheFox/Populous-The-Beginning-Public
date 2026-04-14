@@ -117,4 +117,8 @@ private:
     static void releaseDevice();
     static bool createFramebufferTexture(int width, int height);
     static void drawFramebufferQuad();
+    // Detect a window resize and Reset() the device so the backbuffer tracks
+    // the window client rect. Returns true if the device was just reset and
+    // the caller should skip this frame (mirrors handleDeviceLost).
+    static bool matchWindowSizeToBackbuffer();
 };
