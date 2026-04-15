@@ -32,6 +32,7 @@ bool                Pop3Screen::s_fullscreen          = false;
 bool                Pop3Screen::s_border              = true;
 bool                Pop3Screen::s_ready               = false;
 bool                Pop3Screen::s_hwComposite         = false;
+bool                Pop3Screen::s_debugBackbufferPink = false;
 
 void Pop3Screen::setHwCompositeActive(bool on) { s_hwComposite = on; }
 bool Pop3Screen::hwCompositeActive()           { return s_hwComposite; }
@@ -256,7 +257,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     const unsigned int kAlphaKeyIndex = 0;
 
     // Upload 8bpp indexed pixels → 32bpp ARGB texture. In HW-composite
-    // mode, palette index 255 becomes alpha=0 (transparent); everywhere
+    // mode, palette index 0 becomes alpha=0 (transparent); everywhere
     // else stays alpha=255. In SW-only mode, always alpha=255.
     D3DLOCKED_RECT lr;
     if (SUCCEEDED(s_pFramebufferTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
@@ -284,7 +285,15 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
 
     if (SUCCEEDED(s_pDevice->BeginScene()))
     {
-        s_pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF000000, 1.0f, 0);
+        // Phase 8.5 #12c diag: bright-pink clear instead of black so we
+        // can tell whether "black halos around sprites" are HW writing
+        // black explicitly (halos stay black even with pink clear) vs
+        // alpha-test discarding pixels and revealing the cleared bg
+        // (halos become pink).
+        const D3DCOLOR clearColour = s_debugBackbufferPink
+                                     ? 0xFFFF00FFu  // bright magenta
+                                     : 0xFF000000u; // black
+        s_pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, clearColour, 1.0f, 0);
 
         if (hwComposite)
         {
@@ -464,6 +473,14 @@ int Pop3Screen::getRenderHeight()
     }
     return s_backbufferHeight;
 }
+
+int Pop3Screen::getBackbufferWidth()   { return s_backbufferWidth; }
+int Pop3Screen::getBackbufferHeight()  { return s_backbufferHeight; }
+int Pop3Screen::getFramebufferWidth()  { return s_framebufferWidth; }
+int Pop3Screen::getFramebufferHeight() { return s_framebufferHeight; }
+
+void Pop3Screen::setDebugBackbufferPink(bool on) { s_debugBackbufferPink = on; }
+bool Pop3Screen::debugBackbufferPink()           { return s_debugBackbufferPink; }
 
 bool Pop3Screen::isWindowed()
 {

@@ -79,6 +79,30 @@ public:
     static int getRenderWidth();
     static int getRenderHeight();
 
+    // Phase 8.5 step 12a fix: backbuffer dimensions (the actual D3D9
+    // surface HW geometry rasterises into). When the window is larger
+    // than the SW logical resolution, the SW back surface gets stretched
+    // to fill these dims via drawFramebufferQuad — but HW XYZRHW vertex
+    // coords have to be scaled to match, otherwise HW geometry only
+    // covers the SW-sized top-left corner of the backbuffer (visible as
+    // a black void on the right and bottom).
+    static int getBackbufferWidth();
+    static int getBackbufferHeight();
+
+    // The dimensions of the most recently uploaded SW framebuffer texture
+    // (i.e. _lbFrontSurface.Size at the last `present` call). Used by HW
+    // path to compute the backbuffer-vs-SW scale ratio for vertex coords.
+    // Returns 0 until first present.
+    static int getFramebufferWidth();
+    static int getFramebufferHeight();
+
+    // Phase 8.5 #12c diag — clear the HW backbuffer to bright magenta
+    // every frame instead of black. Lets us distinguish HW writing black
+    // explicitly (halos stay black) from alpha-test discards revealing
+    // the cleared bg (halos become magenta). Toggle from the bgui menu.
+    static void setDebugBackbufferPink(bool on);
+    static bool debugBackbufferPink();
+
     // True if running in windowed mode.
     static bool isWindowed();
 
@@ -120,6 +144,7 @@ private:
     static bool                 s_border;
     static bool                 s_ready;
     static bool                 s_hwComposite;    // Phase 7 composite-order flip
+    static bool                 s_debugBackbufferPink; // Phase 8.5 #12c diag
 
     static bool createDevice();
     static void releaseDevice();

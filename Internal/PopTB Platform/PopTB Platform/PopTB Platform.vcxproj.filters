@@ -172,6 +172,7 @@
       <Filter>Headers</Filter>
     </ClInclude>
     <ClInclude Include="include\Pop3Screen.h" />
+    <ClInclude Include="include\Pop3Platform_Win32.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Pop3App.cpp">
