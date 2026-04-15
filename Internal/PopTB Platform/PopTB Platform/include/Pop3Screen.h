@@ -56,6 +56,12 @@ public:
     // and the Present() call — used for ImGui overlay rendering.
     static void setOverlayCallback(Pop3ScreenCallback cb);
 
+    // Phase 11: HW UI overlay callback — fired in HW-composite mode AFTER
+    // the SW framebuffer quad, for HW draws that must render on top of
+    // the SW UI (shaman portrait, minimap 3D preview, debug overlays).
+    // In SW-only mode this slot is unused.
+    static void setHwUiOverlayCallback(Pop3ScreenCallback cb);
+
     // Register callbacks for D3D9 device init and shutdown —
     // used for ImGui device setup/teardown.
     static void setDeviceInitCallback(Pop3ScreenCallback cb);
@@ -131,6 +137,7 @@ private:
     static IDirect3DTexture9*   s_pFramebufferTex;
 
     static Pop3ScreenCallback   s_overlayCallback;
+    static Pop3ScreenCallback   s_hwUiOverlayCallback;  // Phase 11
     static Pop3ScreenCallback   s_deviceInitCallback;
     static Pop3ScreenCallback   s_deviceDeinitCallback;
 

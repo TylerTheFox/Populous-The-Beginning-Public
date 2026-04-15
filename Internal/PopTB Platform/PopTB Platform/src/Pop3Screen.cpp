@@ -19,6 +19,7 @@ IDirect3DDevice9*   Pop3Screen::s_pDevice            = nullptr;
 IDirect3DTexture9*  Pop3Screen::s_pFramebufferTex    = nullptr;
 
 Pop3ScreenCallback  Pop3Screen::s_overlayCallback    = nullptr;
+Pop3ScreenCallback  Pop3Screen::s_hwUiOverlayCallback = nullptr;
 Pop3ScreenCallback  Pop3Screen::s_deviceInitCallback = nullptr;
 Pop3ScreenCallback  Pop3Screen::s_deviceDeinitCallback = nullptr;
 
@@ -297,11 +298,20 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
 
         if (hwComposite)
         {
-            // HW first (world geometry onto the clean backbuffer), then
-            // the SW back surface as an alpha-keyed overlay quad.
+            // Phase 11 composite order:
+            //   1. HW world geometry into the clean backbuffer (scissored
+            //      to the world rect by HwRender::drawOverlay).
+            //   2. SW back surface as an alpha-keyed overlay quad (panels
+            //      and UI draw here; pal-0 keys through to HW world).
+            //   3. HW UI overlay (shaman portrait, minimap 3D, debug —
+            //      scissor disabled so they can land on sidebar pixels).
+            //   4. ImGui (sits on top of everything — fires from the
+            //      game's draw_callback alongside the HW world pass).
             if (s_overlayCallback)
                 s_overlayCallback();
             drawFramebufferQuad(/*alphaBlend=*/true);
+            if (s_hwUiOverlayCallback)
+                s_hwUiOverlayCallback();
         }
         else
         {
@@ -382,6 +392,11 @@ void Pop3Screen::drawFramebufferQuad(bool alphaBlend)
 void Pop3Screen::setOverlayCallback(Pop3ScreenCallback cb)
 {
     s_overlayCallback = cb;
+}
+
+void Pop3Screen::setHwUiOverlayCallback(Pop3ScreenCallback cb)
+{
+    s_hwUiOverlayCallback = cb;
 }
 
 void Pop3Screen::setDeviceInitCallback(Pop3ScreenCallback cb)
