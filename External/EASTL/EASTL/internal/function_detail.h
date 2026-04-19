@@ -17,7 +17,6 @@
 #include <EASTL/internal/functional_base.h>
 #include <EASTL/internal/move_help.h>
 #include <EASTL/internal/function_help.h>
-#include <EASTL/internal/allocator_traits_fwd_decls.h>
 
 #include <EASTL/type_traits.h>
 #include <EASTL/utility.h>
@@ -33,6 +32,36 @@
 	#include <exception>
 	EA_RESTORE_ALL_VC_WARNINGS()
 #endif
+
+#define EASTL_EMPTY_FUNCTION_QUALIFIER
+
+// https://en.cppreference.com/w/cpp/language/noexcept_spec
+// The noexcept-specification is a part of the function type in C++17 and above, but not before.
+#if defined(EA_COMPILER_CPP17_ENABLED)
+#define EASTL_GENERATE_MEMBER_FUNCTION_NOEXCEPT_VARIANTS(PATTERN, OTHER_QUALIFIER) \
+	PATTERN(OTHER_QUALIFIER EASTL_EMPTY_FUNCTION_QUALIFIER) \
+	PATTERN(OTHER_QUALIFIER noexcept)
+#else
+#define EASTL_GENERATE_MEMBER_FUNCTION_NOEXCEPT_VARIANTS(PATTERN, OTHER_QUALIFIER) \
+	PATTERN(OTHER_QUALIFIER EASTL_EMPTY_FUNCTION_QUALIFIER)
+#endif
+				
+#define EASTL_GENERATE_MEMBER_FUNCTION_REF_VARIANTS(PATTERN, OTHER_QUALIFIER) \
+	EASTL_GENERATE_MEMBER_FUNCTION_NOEXCEPT_VARIANTS(PATTERN, OTHER_QUALIFIER EASTL_EMPTY_FUNCTION_QUALIFIER) \
+	EASTL_GENERATE_MEMBER_FUNCTION_NOEXCEPT_VARIANTS(PATTERN, OTHER_QUALIFIER &) \
+	EASTL_GENERATE_MEMBER_FUNCTION_NOEXCEPT_VARIANTS(PATTERN, OTHER_QUALIFIER &&)
+					
+#define EASTL_GENERATE_MEMBER_FUNCTION_VOLATILE_VARIANTS(PATTERN, OTHER_QUALIFIER) \
+	EASTL_GENERATE_MEMBER_FUNCTION_REF_VARIANTS(PATTERN, OTHER_QUALIFIER EASTL_EMPTY_FUNCTION_QUALIFIER) \
+	EASTL_GENERATE_MEMBER_FUNCTION_REF_VARIANTS(PATTERN, OTHER_QUALIFIER volatile)
+				
+#define EASTL_GENERATE_MEMBER_FUNCTION_CONST_VARIANTS(PATTERN) \
+	EASTL_GENERATE_MEMBER_FUNCTION_VOLATILE_VARIANTS(PATTERN, EASTL_EMPTY_FUNCTION_QUALIFIER) \
+	EASTL_GENERATE_MEMBER_FUNCTION_VOLATILE_VARIANTS(PATTERN, const)
+
+// Helper to generate all combination of qualifiers you can apply to member functions.
+// PATTERN must be a macro that will receive as an argument a possible combination of qualifiers and generate a pattern from it.
+#define EASTL_GENERATE_MEMBER_FUNCTION_VARIANTS(PATTERN) EASTL_GENERATE_MEMBER_FUNCTION_CONST_VARIANTS(PATTERN)
 
 namespace eastl
 {
@@ -51,25 +80,21 @@ namespace eastl
 
 	namespace internal
 	{
-		class unused_class {};
+		class unused_class{};
 
 		union functor_storage_alignment
 		{
 			void (*unused_func_ptr)(void);
 			void (unused_class::*unused_func_mem_ptr)(void);
 			void* unused_ptr;
+			int64_t unused_var;
 		};
 
 		template <int SIZE_IN_BYTES>
 		struct functor_storage
 		{
 			static_assert(SIZE_IN_BYTES >= 0, "local buffer storage cannot have a negative size!");
-			template <typename Ret>
-			Ret& GetStorageTypeRef() const
-			{
-				return *reinterpret_cast<Ret*>(const_cast<char*>(&storage[0]));
-			}
-
+			
 			union
 			{
 				functor_storage_alignment align;
@@ -80,12 +105,6 @@ namespace eastl
 		template <>
 		struct functor_storage<0>
 		{
-			template <typename Ret>
-			Ret& GetStorageTypeRef() const
-			{
-				return *reinterpret_cast<Ret*>(const_cast<char*>(&storage[0]));
-			}
-
 			union
 			{
 				functor_storage_alignment align;
@@ -96,11 +115,23 @@ namespace eastl
 		template <typename Functor, int SIZE_IN_BYTES>
 		struct is_functor_inplace_allocatable
 		{
-			static constexpr bool value =
-			    sizeof(Functor) <= sizeof(functor_storage<SIZE_IN_BYTES>) &&
-			    (eastl::alignment_of_v<functor_storage<SIZE_IN_BYTES>> % eastl::alignment_of_v<Functor>) == 0;
+			static EA_CONSTEXPR bool value = sizeof(Functor) <= sizeof(functor_storage<SIZE_IN_BYTES>) &&
+			                                 (alignof(functor_storage<SIZE_IN_BYTES>) % alignof(Functor)) == 0;
 		};
 
+		enum ManagerOperations : int
+		{
+			MGROPS_DESTRUCT_FUNCTOR = 0,
+			MGROPS_COPY_FUNCTOR = 1,
+			MGROPS_MOVE_FUNCTOR = 2,
+#if EASTL_RTTI_ENABLED
+			MGROPS_GET_TYPE_INFO = 3,
+			MGROPS_GET_FUNC_PTR = 4,
+#endif
+		};
+
+		/// function_base_detail
+		///
 		template <int SIZE_IN_BYTES>
 		class function_base_detail
 		{
@@ -108,68 +139,57 @@ namespace eastl
 			using FunctorStorageType = functor_storage<SIZE_IN_BYTES>;
 			FunctorStorageType mStorage;
 
-			enum ManagerOperations : int
-			{
-				MGROPS_DESTRUCT_FUNCTOR = 0,
-				MGROPS_COPY_FUNCTOR = 1,
-				MGROPS_MOVE_FUNCTOR = 2,
-			#if EASTL_RTTI_ENABLED
-				MGROPS_GET_TYPE_INFO = 3,
-				MGROPS_GET_FUNC_PTR = 4,
-			#endif
-			};
-
 			// Functor can be allocated inplace
 			template <typename Functor, typename = void>
 			class function_manager_base
 			{
 			public:
 
-				static Functor* GetFunctorPtr(const FunctorStorageType& storage) EA_NOEXCEPT
+				static Functor* GetFunctorPtr(void* storage) EA_NOEXCEPT
 				{
-					return &(storage.template GetStorageTypeRef<Functor>());
+					// This case we know the functor fits directly in the storage.
+					return static_cast<Functor*>(storage);
 				}
 
 				template <typename T>
-				static void CreateFunctor(FunctorStorageType& storage, T&& functor)
+				static void CreateFunctor(void* storage, T&& functor)
 				{
 					::new (GetFunctorPtr(storage)) Functor(eastl::forward<T>(functor));
 				}
 
-				static void DestructFunctor(FunctorStorageType& storage)
+				static void DestructFunctor(void* storage)
 				{
 					GetFunctorPtr(storage)->~Functor();
 				}
 
-				static void CopyFunctor(FunctorStorageType& to, const FunctorStorageType& from)
+				static void CopyFunctor(void* to, void* from)
 				{
 					::new (GetFunctorPtr(to)) Functor(*GetFunctorPtr(from));
 				}
 
-				static void MoveFunctor(FunctorStorageType& to, FunctorStorageType& from) EA_NOEXCEPT
+				static void MoveFunctor(void* to, void* from) EA_NOEXCEPT
 				{
 					::new (GetFunctorPtr(to)) Functor(eastl::move(*GetFunctorPtr(from)));
 				}
 
-				static void* Manager(void* to, void* from, typename function_base_detail::ManagerOperations ops) EA_NOEXCEPT
+				static void* Manager(void* to, void* from, typename internal::ManagerOperations ops) EA_NOEXCEPT
 				{
 					switch (ops)
 					{
 						case MGROPS_DESTRUCT_FUNCTOR:
 						{
-							DestructFunctor(*static_cast<FunctorStorageType*>(to));
+							DestructFunctor(to);
 						}
 						break;
 						case MGROPS_COPY_FUNCTOR:
 						{
-							CopyFunctor(*static_cast<FunctorStorageType*>(to),
-							            *static_cast<const FunctorStorageType*>(from));
+							CopyFunctor(to, from);
 						}
 						break;
 						case MGROPS_MOVE_FUNCTOR:
 						{
-							MoveFunctor(*static_cast<FunctorStorageType*>(to), *static_cast<FunctorStorageType*>(from));
-							DestructFunctor(*static_cast<FunctorStorageType*>(from));
+							MoveFunctor(to, from);
+							DestructFunctor(from);
 						}
 						break;
 						default:
@@ -184,18 +204,22 @@ namespace eastl
 			class function_manager_base<Functor, typename eastl::enable_if<!is_functor_inplace_allocatable<Functor, SIZE_IN_BYTES>::value>::type>
 			{
 			public:
-				static Functor* GetFunctorPtr(const FunctorStorageType& storage) EA_NOEXCEPT
+				static Functor* GetFunctorPtr(void* storage) EA_NOEXCEPT
 				{
-					return storage.template GetStorageTypeRef<Functor*>();
+					// in this case, we know the in-place storage contains a pointer
+					// to the actual functor, so we need to read it from here.
+					return *static_cast<Functor**>(storage);
 				}
 
-				static Functor*& GetFunctorPtrRef(const FunctorStorageType& storage) EA_NOEXCEPT
+				static Functor*& GetFunctorPtrRef(void* storage) EA_NOEXCEPT
 				{
-					return storage.template GetStorageTypeRef<Functor*>();
+					// in this case, we know the in-place storage contains a pointer
+					// to the actual functor, so we need to read it from here.
+					return *static_cast<Functor**>(storage);
 				}
 
 				template <typename T>
-				static void CreateFunctor(FunctorStorageType& storage, T&& functor)
+				static void CreateFunctor(void* storage, T&& functor)
 				{
 					auto& allocator = *EASTLAllocatorDefault();
 					Functor* func = static_cast<Functor*>(allocator.allocate(sizeof(Functor), alignof(Functor), 0));
@@ -213,7 +237,7 @@ namespace eastl
 					GetFunctorPtrRef(storage) = func;
 				}
 
-				static void DestructFunctor(FunctorStorageType& storage)
+				static void DestructFunctor(void* storage)
 				{
 					Functor* func = GetFunctorPtr(storage);
 					if (func)
@@ -224,7 +248,7 @@ namespace eastl
 					}
 				}
 
-				static void CopyFunctor(FunctorStorageType& to, const FunctorStorageType& from)
+				static void CopyFunctor(void* to, void* from)
 				{
 					auto& allocator = *EASTLAllocatorDefault();
 					Functor* func = static_cast<Functor*>(allocator.allocate(sizeof(Functor), alignof(Functor), 0));
@@ -240,31 +264,30 @@ namespace eastl
 					GetFunctorPtrRef(to) = func;
 				}
 
-				static void MoveFunctor(FunctorStorageType& to, FunctorStorageType& from) EA_NOEXCEPT
+				static void MoveFunctor(void* to, void* from) EA_NOEXCEPT
 				{
 					Functor* func = GetFunctorPtr(from);
 					GetFunctorPtrRef(to) = func;
 					GetFunctorPtrRef(from) = nullptr;
 				}
 
-				static void* Manager(void* to, void* from, typename function_base_detail::ManagerOperations ops) EA_NOEXCEPT
+				static void* Manager(void* to, void* from, typename internal::ManagerOperations ops) EA_NOEXCEPT
 				{
 					switch (ops)
 					{
 						case MGROPS_DESTRUCT_FUNCTOR:
 						{
-							DestructFunctor(*static_cast<FunctorStorageType*>(to));
+							DestructFunctor(to);
 						}
 						break;
 						case MGROPS_COPY_FUNCTOR:
 						{
-							CopyFunctor(*static_cast<FunctorStorageType*>(to),
-							            *static_cast<const FunctorStorageType*>(from));
+							CopyFunctor(to, from);
 						}
 						break;
 						case MGROPS_MOVE_FUNCTOR:
 						{
-							MoveFunctor(*static_cast<FunctorStorageType*>(to), *static_cast<FunctorStorageType*>(from));
+							MoveFunctor(to, from);
 							// Moved ptr, no need to destruct ourselves
 						}
 						break;
@@ -287,7 +310,7 @@ namespace eastl
 					return reinterpret_cast<void*>(const_cast<std::type_info*>(&typeid(Functor)));
 				}
 
-				static void* Manager(void* to, void* from, typename function_base_detail::ManagerOperations ops) EA_NOEXCEPT
+				static void* Manager(void* to, void* from, ManagerOperations ops) EA_NOEXCEPT
 				{
 					switch (ops)
 					{
@@ -298,7 +321,7 @@ namespace eastl
 						break;
 						case MGROPS_GET_FUNC_PTR:
 						{
-							return static_cast<void*>(Base::GetFunctorPtr(*static_cast<FunctorStorageType*>(to)));
+							return static_cast<void*>(Base::GetFunctorPtr(to));
 						}
 						break;
 						default:
@@ -310,9 +333,88 @@ namespace eastl
 				}
 			#endif // EASTL_RTTI_ENABLED
 
-				static R Invoker(const FunctorStorageType& functor, Args... args)
+				/**
+				 * NOTE:
+				 *
+				 * The order of arguments here is vital to the call optimization. Let's dig into why and look at some asm.
+				 * We have two invoker signatures to consider:
+				 *   R Invoker(const FunctorStorageType& functor, Args... args)
+				 *   R Invoker(Args... args, const FunctorStorageType& functor)
+				 *
+				 * Assume we are using the Windows x64 Calling Convention where the first 4 arguments are passed into
+				 * RCX, RDX, R8, R9. This optimization works for any Calling Convention, we are just using Windows x64 for
+				 * this example.
+				 *
+				 * Given the following member function: void TestMemberFunc(int a, int b)
+				 *  RCX == this
+				 *  RDX == a
+				 *  R8  == b
+				 *
+				 * All three arguments to the function including the hidden this pointer, which in C++ is always the first argument
+				 * are passed into the first three registers.
+				 * The function call chain for eastl::function<>() is as follows:
+				 *  operator ()(this, Args... args) -> Invoker(Args... args, this->mStorage) -> StoredFunction(Args... arg)
+				 *
+				 * Let's look at what is happening at the asm level with the different Invoker function signatures and why.
+				 *
+				 * You will notice that operator ()() and Invoker() have the arguments reversed. operator ()() just directly calls
+				 * to Invoker(), it is a tail call, so we force inline the call operator to ensure we directly call to the Invoker().
+				 * Most compilers always inline it anyways by default; have been instances where it doesn't even though the asm ends
+				 * up being cheaper.
+				 * call -> call -> call versus call -> call
+				 *
+				 * eastl::function<int(int, int)> = FunctionPointer
+				 *
+				 * Assume we have the above eastl::function object that holds a pointer to a function as the internal callable.
+				 *
+				 * Invoker(this->mStorage, Args... args) is called with the follow arguments in registers:
+				 *  RCX = this  |  RDX = a  |  R8 = b
+				 *
+				 * Inside Invoker() we use RCX to deference into the eastl::function object and get the function pointer to call.
+				 * This function to call has signature Func(int, int) and thus requires its arguments in registers RCX and RDX.
+				 * The compiler must shift all the arguments towards the left. The full asm looks something as follows.
+				 *
+				 * Calling Invoker:                       Inside Invoker:
+				 *
+				 * mov rcx, this                          mov rax, [rcx]
+				 * mov rdx, a                             mov rcx, rdx
+				 * mov r8, b                              mov rdx, r8
+				 * call [rcx + offset to Invoker]         jmp [rax]
+				 *
+				 * Notice how the compiler shifts all the arguments before calling the callable and also we only use the this pointer
+				 * to access the internal storage inside the eastl::function object.
+				 *
+				 * Invoker(Args... args, this->mStorage) is called with the following arguments in registers:
+				 *  RCX = a  |  RDX = b  |  R8 = this
+				 *
+				 * You can see we no longer have to shift the arguments down when going to call the internal stored callable.
+				 *
+				 * Calling Invoker:                      Inside Invoker:
+				 *
+				 * mov rcx, a                            mov rax, [r8]
+				 * mov rdx, b                            jmp [rax]
+				 * mov r8, this
+				 * call [r8 + offset to Invoker]
+				 *
+				 * The generated asm does a straight tail jmp to the loaded function pointer. The arguments are already in the correct
+				 * registers.
+				 *
+				 * For Functors or Lambdas with no captures, this gives us another free register to use to pass arguments since the this
+				 * is at the end, it can be passed onto the stack if we run out of registers. Since the callable has no captures; inside
+				 * the Invoker(), we won't ever need to touch this thus we can just call the operator ()() or let the compiler inline it.
+				 *
+				 * For a callable with captures there is no perf hit since the callable in the common case is inlined and the pointer to the callable
+				 * buffer is passed in a register which the compiler can use to access the captures.
+				 *
+				 * For eastl::function<void(const T&, int, int)> that a holds a pointer to member function. The this pointers is implicitly
+				 * the first argument in the argument list, const T&, and the member function pointer will be called on that object.
+				 * This prevents any argument shifting since the this for the member function pointer is already in RCX.
+				 *
+				 * This is why having this at the end of the argument list is important for generating efficient Invoker() thunks.
+				 */
+				static R Invoker(Args... args, void* storage)
 				{
-					return eastl::invoke(*Base::GetFunctorPtr(functor), eastl::forward<Args>(args)...);
+					return eastl::invoke(*Base::GetFunctorPtr(storage), eastl::forward<Args>(args)...);
 				}
 			};
 
@@ -320,20 +422,27 @@ namespace eastl
 			~function_base_detail() EA_NOEXCEPT = default;
 		};
 
-		#define EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(FUNCTOR, RET, ARGS, BASE, MYSELF) \
-			typename eastl::enable_if<eastl::is_invocable_r<RET, FUNCTOR, ARGS>::value \
-									  && !eastl::is_base_of_v<BASE, eastl::decay_t<FUNCTOR>> \
-									  && !eastl::is_same_v<eastl::decay_t<FUNCTOR>, MYSELF>>::type
+		#define EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(FUNCTOR, RET, ARGS, BASE, MYSELF)  \
+			typename eastl::enable_if_t<eastl::is_invocable_r_v<RET, FUNCTOR, ARGS> &&         \
+										!eastl::is_base_of_v<BASE, eastl::decay_t<FUNCTOR>> && \
+										!eastl::is_same_v<eastl::decay_t<FUNCTOR>, MYSELF>>
 
 		#define EASTL_INTERNAL_FUNCTION_DETAIL_VALID_FUNCTION_ARGS(FUNCTOR, RET, ARGS, MYSELF) \
 			EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(FUNCTOR, RET, ARGS, MYSELF, MYSELF)
 
+
+		/// function_detail
+		///
 		template <int, typename>
 		class function_detail;
-
+		
 		template <int SIZE_IN_BYTES, typename R, typename... Args>
 		class function_detail<SIZE_IN_BYTES, R(Args...)> : public function_base_detail<SIZE_IN_BYTES>
 		{
+
+		template <int OTHER_SIZE_IN_BYTES, typename T>
+		friend class function_detail;
+
 		public:
 			using result_type = R;
 
@@ -362,10 +471,24 @@ namespace eastl
 				}
 			}
 
-			template <typename Functor, typename = EASTL_INTERNAL_FUNCTION_DETAIL_VALID_FUNCTION_ARGS(Functor, R, Args..., function_detail)>
-			function_detail(Functor functor)
+			template<int OTHER_SIZE_IN_BYTES>
+			function_detail(function_detail <OTHER_SIZE_IN_BYTES, R(Args...)> && other)
 			{
-				CreateForwardFunctor(eastl::move(functor));
+				static_assert(OTHER_SIZE_IN_BYTES < SIZE_IN_BYTES, "Other sized function_detail must be smaller");
+				Move(eastl::move(other));
+			}
+
+			template <int OTHER_SIZE_IN_BYTES>
+			function_detail(const function_detail<OTHER_SIZE_IN_BYTES, R(Args...)>& other)
+			{
+				static_assert(OTHER_SIZE_IN_BYTES < SIZE_IN_BYTES, "Other sized function_detail must be smaller");
+				Copy(other);
+			}
+
+			template <typename Functor, typename = EASTL_INTERNAL_FUNCTION_DETAIL_VALID_FUNCTION_ARGS(Functor, R, Args..., function_detail)>
+			function_detail(Functor&& functor)
+			{
+				CreateForwardFunctor(eastl::forward<Functor>(functor));
 			}
 
 			~function_detail() EA_NOEXCEPT
@@ -395,15 +518,35 @@ namespace eastl
 				return *this;
 			}
 
+			template <int OTHER_SIZE_IN_BYTES>
+			function_detail& operator=(const function_detail<OTHER_SIZE_IN_BYTES, R(Args...)>& other)
+			{
+				static_assert(OTHER_SIZE_IN_BYTES < SIZE_IN_BYTES, "Other sized function_detail must be smaller");
+				Destroy();
+				Copy(other);
+			
+				return *this;
+			}
+
+			template <int OTHER_SIZE_IN_BYTES>
+			function_detail& operator=(function_detail<OTHER_SIZE_IN_BYTES, R(Args...)>&& other)
+			{
+				static_assert(OTHER_SIZE_IN_BYTES < SIZE_IN_BYTES, "Other sized function_detail must be smaller");
+				Destroy();
+				Move(eastl::move(other));
+			
+				return *this;
+			}
+
 			function_detail& operator=(std::nullptr_t) EA_NOEXCEPT
 			{
 				Destroy();
 				mMgrFuncPtr = nullptr;
-				mInvokeFuncPtr = nullptr;
+				mInvokeFuncPtr = &DefaultInvoker;
 
 				return *this;
 			}
-
+			
 			template <typename Functor, typename = EASTL_INTERNAL_FUNCTION_DETAIL_VALID_FUNCTION_ARGS(Functor, R, Args..., function_detail)>
 			function_detail& operator=(Functor&& functor)
 			{
@@ -411,7 +554,7 @@ namespace eastl
 				CreateForwardFunctor(eastl::forward<Functor>(functor));
 				return *this;
 			}
-
+			
 			template <typename Functor>
 			function_detail& operator=(eastl::reference_wrapper<Functor> f) EA_NOEXCEPT
 			{
@@ -428,20 +571,20 @@ namespace eastl
 				FunctorStorageType tempStorage;
 				if (other.HaveManager())
 				{
-					(void)(*other.mMgrFuncPtr)(static_cast<void*>(&tempStorage), static_cast<void*>(&other.mStorage),
-											   Base::ManagerOperations::MGROPS_MOVE_FUNCTOR);
+					(void)(*other.mMgrFuncPtr)(tempStorage.storage, other.mStorage.storage,
+											   ManagerOperations::MGROPS_MOVE_FUNCTOR);
 				}
 
 				if (HaveManager())
 				{
-					(void)(*mMgrFuncPtr)(static_cast<void*>(&other.mStorage), static_cast<void*>(&mStorage),
-										 Base::ManagerOperations::MGROPS_MOVE_FUNCTOR);
+					(void)(*mMgrFuncPtr)(other.mStorage.storage, mStorage.storage,
+										 ManagerOperations::MGROPS_MOVE_FUNCTOR);
 				}
 
 				if (other.HaveManager())
 				{
-					(void)(*other.mMgrFuncPtr)(static_cast<void*>(&mStorage), static_cast<void*>(&tempStorage),
-											   Base::ManagerOperations::MGROPS_MOVE_FUNCTOR);
+					(void)(*other.mMgrFuncPtr)(mStorage.storage, tempStorage.storage,
+											   ManagerOperations::MGROPS_MOVE_FUNCTOR);
 				}
 
 				eastl::swap(mMgrFuncPtr, other.mMgrFuncPtr);
@@ -453,17 +596,9 @@ namespace eastl
 				return HaveManager();
 			}
 
-			R operator ()(Args... args) const
+			EASTL_FORCE_INLINE R operator ()(Args... args) const
 			{
-			#if EASTL_EXCEPTIONS_ENABLED
-				if (!HaveManager())
-				{
-					throw eastl::bad_function_call();
-				}
-			#else
-				EASTL_ASSERT_MSG(HaveManager(), "function_detail call on an empty function_detail<R(Args..)>");
-			#endif
-				return (*mInvokeFuncPtr)(mStorage, eastl::forward<Args>(args)...);
+				return (*mInvokeFuncPtr)(eastl::forward<Args>(args)..., const_cast<char*>(this->mStorage.storage));
 			}
 
 			#if EASTL_RTTI_ENABLED
@@ -471,7 +606,7 @@ namespace eastl
 				{
 					if (HaveManager())
 					{
-						void* ret = (*mMgrFuncPtr)(nullptr, nullptr, Base::ManagerOperations::MGROPS_GET_TYPE_INFO);
+						void* ret = (*mMgrFuncPtr)(nullptr, nullptr, ManagerOperations::MGROPS_GET_TYPE_INFO);
 						return *(static_cast<const std::type_info*>(ret));
 					}
 					return typeid(void);
@@ -482,8 +617,7 @@ namespace eastl
 				{
 					if (HaveManager() && target_type() == typeid(Functor))
 					{
-						void* ret = (*mMgrFuncPtr)(static_cast<void*>(&mStorage), nullptr,
-												   Base::ManagerOperations::MGROPS_GET_FUNC_PTR);
+						void* ret = (*mMgrFuncPtr)(mStorage.storage, nullptr, ManagerOperations::MGROPS_GET_FUNC_PTR);
 						return ret ? static_cast<Functor*>(ret) : nullptr;
 					}
 					return nullptr;
@@ -494,8 +628,11 @@ namespace eastl
 				{
 					if (HaveManager() && target_type() == typeid(Functor))
 					{
-						void* ret = (*mMgrFuncPtr)(static_cast<void*>(&mStorage), nullptr,
-												   Base::ManagerOperations::MGROPS_GET_FUNC_PTR);
+						// Note: the const_cast on &mStorage is "safe" here because we're doing a
+						// MGROPS_GET_FUNC_PTR operation. We can't change the entire signature
+						// of mMgrFuncPtr because we use it to modify the storage with other
+						// operations.
+						const void* ret = (*mMgrFuncPtr)(const_cast<char*>(mStorage.storage), nullptr, ManagerOperations::MGROPS_GET_FUNC_PTR);
 						return ret ? static_cast<const Functor*>(ret) : nullptr;
 					}
 					return nullptr;
@@ -512,8 +649,8 @@ namespace eastl
 			{
 				if (HaveManager())
 				{
-					(void)(*mMgrFuncPtr)(static_cast<void*>(&mStorage), nullptr,
-					                     Base::ManagerOperations::MGROPS_DESTRUCT_FUNCTOR);
+					(void)(*mMgrFuncPtr)(mStorage.storage, nullptr,
+					                     ManagerOperations::MGROPS_DESTRUCT_FUNCTOR);
 				}
 			}
 
@@ -521,9 +658,23 @@ namespace eastl
 			{
 				if (other.HaveManager())
 				{
-					(void)(*other.mMgrFuncPtr)(static_cast<void*>(&mStorage),
-					                           const_cast<void*>(static_cast<const void*>(&other.mStorage)),
-					                           Base::ManagerOperations::MGROPS_COPY_FUNCTOR);
+					(void)(*other.mMgrFuncPtr)(mStorage.storage, const_cast<char*>(other.mStorage.storage),
+					                           ManagerOperations::MGROPS_COPY_FUNCTOR);
+				}
+
+				mMgrFuncPtr = other.mMgrFuncPtr;
+				mInvokeFuncPtr = other.mInvokeFuncPtr;
+			}
+
+			template <int OTHER_SIZE_IN_BYTES>
+			void Copy(const function_detail<OTHER_SIZE_IN_BYTES, R(Args...)>& other)
+			{
+				static_assert(OTHER_SIZE_IN_BYTES < SIZE_IN_BYTES, "Other sized function_detail must be smaller");
+
+				if (other.HaveManager())
+				{
+					(void)(*other.mMgrFuncPtr)(mStorage.storage, const_cast<char*>(other.mStorage.storage),
+					                           ManagerOperations::MGROPS_COPY_FUNCTOR);
 				}
 
 				mMgrFuncPtr = other.mMgrFuncPtr;
@@ -534,14 +685,32 @@ namespace eastl
 			{
 				if (other.HaveManager())
 				{
-					(void)(*other.mMgrFuncPtr)(static_cast<void*>(&mStorage), static_cast<void*>(&other.mStorage),
-					                           Base::ManagerOperations::MGROPS_MOVE_FUNCTOR);
+					(void)(*other.mMgrFuncPtr)(mStorage.storage, other.mStorage.storage,
+					                           ManagerOperations::MGROPS_MOVE_FUNCTOR);
 				}
 
 				mMgrFuncPtr = other.mMgrFuncPtr;
 				mInvokeFuncPtr = other.mInvokeFuncPtr;
 				other.mMgrFuncPtr = nullptr;
-				other.mInvokeFuncPtr = nullptr;
+				other.mInvokeFuncPtr = &DefaultInvoker;
+			}
+
+			template <int OTHER_SIZE_IN_BYTES>
+			void Move(function_detail<OTHER_SIZE_IN_BYTES, R(Args...)>&& other)
+			{
+				static_assert(OTHER_SIZE_IN_BYTES < SIZE_IN_BYTES, "Other sized function_detail must be smaller");
+
+				if (other.HaveManager())
+				{
+					(void)(*other.mMgrFuncPtr)(mStorage.storage, other.mStorage.storage,
+					                           ManagerOperations::MGROPS_MOVE_FUNCTOR);
+				}
+
+				mMgrFuncPtr = other.mMgrFuncPtr;
+				mInvokeFuncPtr = other.mInvokeFuncPtr;
+
+				other.mMgrFuncPtr = nullptr;
+				other.mInvokeFuncPtr =  &function_detail <OTHER_SIZE_IN_BYTES, R(Args...)>::DefaultInvoker;
 			}
 
 			template <typename Functor>
@@ -553,26 +722,69 @@ namespace eastl
 				if (internal::is_null(functor))
 				{
 					mMgrFuncPtr = nullptr;
-					mInvokeFuncPtr = nullptr;
+					mInvokeFuncPtr = &DefaultInvoker;
 				}
 				else
 				{
 					mMgrFuncPtr = &FunctionManagerType::Manager;
 					mInvokeFuncPtr = &FunctionManagerType::Invoker;
-					FunctionManagerType::CreateFunctor(mStorage, eastl::forward<Functor>(functor));
+					FunctionManagerType::CreateFunctor(mStorage.storage, eastl::forward<Functor>(functor));
 				}
 			}
 
 		private:
-			typedef void* (*ManagerFuncPtr)(void*, void*, typename Base::ManagerOperations);
-			typedef R (*InvokeFuncPtr)(const FunctorStorageType&, Args...);
+			typedef void* (*ManagerFuncPtr)(void*, void*, typename internal::ManagerOperations);
+			typedef R (*InvokeFuncPtr)(Args..., void*);
+
+			EA_DISABLE_GCC_WARNING(-Wreturn-type);
+			EA_DISABLE_CLANG_WARNING(-Wreturn-type);
+			EA_DISABLE_VC_WARNING(4716); // 'function' must return a value
+			EA_DISABLE_VC_WARNING(4702); // unreachable code
+			// We cannot assume that R is default constructible.
+			// This function is called only when the function object CANNOT be called because it is empty,
+			// it will always throw or assert so we never use the return value anyways and neither should the caller.
+			static R DefaultInvoker(Args... /*args*/, void* /*storage*/)
+			{
+				#if EASTL_EXCEPTIONS_ENABLED
+					throw eastl::bad_function_call();
+				#else
+					EASTL_ASSERT_MSG(false, "function_detail call on an empty function_detail<R(Args..)>");
+				#endif
+				// We want to explicitly crash here, since calling this function is equivalent
+				// to dereferencing a nullptr, we don't want to silently continue execution and
+				// have this function (which has no return value) potentially return arbitrary
+				// garbage to the caller.
+				*((volatile int*)0) = 0xDEADC0DE;
+
+			};
+			EA_RESTORE_VC_WARNING();
+			EA_RESTORE_VC_WARNING();
+			EA_RESTORE_CLANG_WARNING();
+			EA_RESTORE_GCC_WARNING();
+
 
 			ManagerFuncPtr mMgrFuncPtr = nullptr;
-			InvokeFuncPtr mInvokeFuncPtr = nullptr;
+			InvokeFuncPtr mInvokeFuncPtr = &DefaultInvoker;
 		};
 
-	} // namespace internal
+		template <class Callable>
+		struct extract_signature_from_callable;
 
+		#define EASTL_EXTRACT_SIGNATURE_PATTERN(QUALIFIERS) \
+			template <typename ReturnType, typename MemberOfType, typename... Args> \
+			struct extract_signature_from_callable<ReturnType (MemberOfType::*)(Args...) QUALIFIERS> \
+			{ \
+				using type = ReturnType(Args...); \
+			};
+
+		EASTL_GENERATE_MEMBER_FUNCTION_VARIANTS(EASTL_EXTRACT_SIGNATURE_PATTERN)
+
+		// Helper
+		template <typename Callable>
+		using extract_signature_from_callable_t = typename extract_signature_from_callable<Callable>::type;
+
+	} // namespace internal
+		
 } // namespace eastl
 
 #endif // EASTL_FUNCTION_DETAIL_H

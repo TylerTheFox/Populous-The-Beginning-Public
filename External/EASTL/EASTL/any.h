@@ -9,7 +9,7 @@
 //
 // eastl::any is a type-safe container for single values of any type.  Our
 // implementation makes use of the "small local buffer" optimization to avoid
-// unnecessary dynamic memory allocation if the specified type is a eligible to
+// unnecessary dynamic memory allocation if the specified type is eligible to
 // be stored in its local buffer.  The user type must satisfy the size
 // requirements and must be no-throw move-constructible to qualify for the local
 // buffer optimization.
@@ -193,14 +193,19 @@ namespace eastl
 				refAny.m_handler = nullptr;
 			}
 
+			static void* get(const any* pThis)
+			{
+				EASTL_ASSERT(pThis);
+				return (void*)(&pThis->m_storage.internal_storage);
+			}
+
 			static void* handler_func(storage_operation op, const any* pThis, any* pOther)
 			{
 				switch (op)
 				{
 					case storage_operation::GET:
 					{
-						EASTL_ASSERT(pThis);
-						return (void*)(&pThis->m_storage.internal_storage);
+						return get(pThis);
 					}
 					break;
 
@@ -280,15 +285,20 @@ namespace eastl
 				refAny.m_handler = nullptr;
 			}
 
+			static void* get(const any* pThis)
+			{
+				EASTL_ASSERT(pThis);
+				EASTL_ASSERT(pThis->m_storage.external_storage);
+				return static_cast<void*>(pThis->m_storage.external_storage);
+			}
+
 			static void* handler_func(storage_operation op, const any* pThis, any* pOther)
 			{
 				switch (op)
 				{
 					case storage_operation::GET:
 					{
-						EASTL_ASSERT(pThis);
-						EASTL_ASSERT(pThis->m_storage.external_storage);
-						return static_cast<void*>(pThis->m_storage.external_storage);
+						return get(pThis);
 					}
 					break;
 
@@ -456,18 +466,19 @@ namespace eastl
         // 20.7.3.3, modifiers
 		#if EASTL_VARIADIC_TEMPLATES_ENABLED
 			template <class T, class... Args>
-			void emplace(Args&&... args)
+			typename eastl::enable_if<eastl::is_constructible_v<eastl::decay_t<T>, Args...> && eastl::is_copy_constructible_v<eastl::decay_t<T>>, eastl::decay_t<T>&>::type
+			emplace(Args&&... args)
 			{
 			    typedef storage_handler<decay_t<T>> StorageHandlerT;
-				static_assert(eastl::is_constructible<T, Args...>::value, "T must be constructible with Args...");
 
 			    reset();
 				StorageHandlerT::construct_inplace(m_storage, eastl::forward<Args>(args)...);
 				m_handler = &StorageHandlerT::handler_func;
+				return *static_cast<decay_t<T>*>(StorageHandlerT::get(this));
 			}
 
 			template <class NT, class U, class... Args>
-		    typename eastl::enable_if<eastl::is_constructible<NT, std::initializer_list<U>&, Args...>::value, void>::type
+		    typename eastl::enable_if<eastl::is_constructible_v<eastl::decay_t<NT>, std::initializer_list<U>&, Args...> && eastl::is_copy_constructible_v<eastl::decay_t<NT>>, eastl::decay_t<NT>&>::type
 			emplace(std::initializer_list<U> il, Args&&... args)
 			{
 			    typedef storage_handler<decay_t<NT>> StorageHandlerT;
@@ -475,6 +486,7 @@ namespace eastl
 				reset();
 				StorageHandlerT::construct_inplace(m_storage, il, eastl::forward<Args>(args)...);
 				m_handler = &StorageHandlerT::handler_func;
+				return *static_cast<decay_t<NT>*>(StorageHandlerT::get(this));
 			}
         #endif
 
@@ -501,16 +513,20 @@ namespace eastl
 				m_handler = tmp.m_handler;
 				tmp.m_handler(storage_operation::MOVE, &tmp, this);
 			}
-			else if (m_handler == nullptr)
+			else if (m_handler == nullptr && other.m_handler)
 			{
 				eastl::swap(m_handler, other.m_handler);
 				m_handler(storage_operation::MOVE, &other, this);
 			}
-			else if(other.m_handler == nullptr)
+			else if(m_handler && other.m_handler == nullptr)
 			{
 				eastl::swap(m_handler, other.m_handler);
 				other.m_handler(storage_operation::MOVE, this, &other);
 			}
+			//else if (m_handler == nullptr && other.m_handler == nullptr)
+			//{
+			//     // nothing to swap 
+			//}
 		}
 
 	    // 20.7.3.4, observers
@@ -587,12 +603,12 @@ namespace eastl
 
 	// NOTE(rparolin): The runtime type check was commented out because in DLL builds the templated function pointer
 	// value will be different -- completely breaking the validation mechanism.  Due to the fact that eastl::any uses
-	// type erasure we can't refesh (on copy/move) the cached function pointer to the internal handler function because
+	// type erasure we can't refresh (on copy/move) the cached function pointer to the internal handler function because
 	// we don't statically know the type.
 	template <class ValueType>
 	inline const ValueType* any_cast(const any* pAny) EA_NOEXCEPT
 	{
-		return (pAny && pAny->m_handler //== &any::storage_handler<decay_t<ValueType>>::handler_func
+		return (pAny && pAny->m_handler EASTL_IF_NOT_DLL(== &any::storage_handler<decay_t<ValueType>>::handler_func)
 				#if EASTL_RTTI_ENABLED
 					&& pAny->type() == typeid(typename remove_reference<ValueType>::type)
 				#endif
@@ -604,7 +620,7 @@ namespace eastl
 	template <class ValueType>
 	inline ValueType* any_cast(any* pAny) EA_NOEXCEPT
 	{
-		return (pAny && pAny->m_handler //== &any::storage_handler<decay_t<ValueType>>::handler_func
+		return (pAny && pAny->m_handler EASTL_IF_NOT_DLL(== &any::storage_handler<decay_t<ValueType>>::handler_func)
 				#if EASTL_RTTI_ENABLED
 					&& pAny->type() == typeid(typename remove_reference<ValueType>::type)
 				#endif
@@ -633,13 +649,13 @@ namespace eastl
 		template <class T, class... Args>
 		inline any make_any(Args&&... args)
 		{
-			return any(eastl::in_place<T>, eastl::forward<Args>(args)...);
+			return any(eastl::in_place_type<T>, eastl::forward<Args>(args)...);
 		}
 
 		template <class T, class U, class... Args>
 		inline any make_any(std::initializer_list<U> il, Args&&... args)
 		{
-			return any(eastl::in_place<T>, il, eastl::forward<Args>(args)...);
+			return any(eastl::in_place_type<T>, il, eastl::forward<Args>(args)...);
 		}
     #endif
 

@@ -16,7 +16,7 @@ public:
 
     Pop3RenderArea(Pop3Size size, Pop3PixFormat& format, unsigned char* data = nullptr, unsigned int memwidth = 0);
 
-    TbError SetupClientRA(Pop3RenderArea& ra, Pop3Point& origin, Pop3Size& size = Pop3Size(0xffffff, 0xffffff)) const;
+    TbError SetupClientRA(Pop3RenderArea& ra, Pop3Point& origin, const Pop3Size& size = Pop3Size(0xffffff, 0xffffff)) const;
     TbError SetupClientRA(Pop3RenderArea& ra, Pop3Rect& rect) const;
 
     unsigned int GetMemSize() const;

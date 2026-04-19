@@ -29,12 +29,9 @@
 #include <EASTL/initializer_list.h>
 #include <stddef.h>
 
-
-#ifdef _MSC_VER
-	#pragma warning(push)
-	#pragma warning(disable: 4530)  // C++ exception handler used, but unwind semantics are not enabled. Specify /EHsc
-	#pragma warning(disable: 4571)  // catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught.
-#endif
+// 4530 - C++ exception handler used, but unwind semantics are not enabled. Specify /EHsc
+// 4571 - catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught.
+EA_DISABLE_VC_WARNING(4530 4571);
 
 #if defined(EA_PRAGMA_ONCE_SUPPORTED)
 	#pragma once // Some compilers (e.g. VC++) benefit significantly from using this. We've measured 3-4% build speed improvements in apps as a result.
@@ -167,6 +164,18 @@ namespace eastl
 		//
 		// template <class Allocator>
 		// priority_queue(const Compare&, container_type&&, const Allocator&);
+		//
+		// template <typename InputIterator, class Allocator>
+		// priority_queue(InputIterator first, InputIterator last, const Allocator& allocator);
+		//
+		// template <typename InputIterator, class Allocator>
+		// priority_queue(InputIterator first, InputIterator last, const compare_type& compare, const Allocator& allocator);
+		//
+		// template <typename InputIterator, class Allocator>
+		// priority_queue(InputIterator first, InputIterator last, const compare_type& compare, const container_type& x, const Allocator& allocator);
+		//
+		// template <typename InputIterator, class Allocator>
+		// priority_queue(InputIterator first, InputIterator last, const compare_type& compare, container_type&& x, const Allocator& allocator);
 
 		bool      empty() const;
 		size_type size() const;
@@ -184,8 +193,8 @@ namespace eastl
 
 		void pop(value_type& value);    // Extension to the C++11 Standard that allows popping a move-only type (e.g. unique_ptr).
 
-		void change(size_type n);   /// Moves the item at the given array index to a new location based on its current priority.
-		void remove(size_type n);   /// Removes the item at the given array index.
+		void change(size_type n);   /// Extension to the C++ Standard. Moves the item at the given array index to a new location based on its current priority.
+		void remove(size_type n);   /// Extension to the C++ Standard. Removes the item at the given array index.
 
 		container_type&       get_container();
 		const container_type& get_container() const;
@@ -303,6 +312,11 @@ namespace eastl
 	inline typename priority_queue<T, Container, Compare>::const_reference
 	priority_queue<T, Container, Compare>::top() const
 	{
+#if EASTL_ASSERT_ENABLED && EASTL_EMPTY_REFERENCE_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(c.empty()))
+			EASTL_FAIL_MSG("priority_queue::top -- empty container");
+#endif
+
 		return c.front();
 	}
 
@@ -360,6 +374,11 @@ namespace eastl
 	template <typename T, typename Container, typename Compare>
 	inline void priority_queue<T, Container, Compare>::pop()
 	{
+#if EASTL_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(c.empty()))
+			EASTL_FAIL_MSG("priority_queue::pop -- empty container");
+#endif
+
 		#if EASTL_EXCEPTIONS_ENABLED
 			try
 			{
@@ -381,6 +400,11 @@ namespace eastl
 	template <typename T, typename Container, typename Compare>
 	inline void priority_queue<T, Container, Compare>::pop(value_type& value)
 	{
+#if EASTL_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(c.empty()))
+			EASTL_FAIL_MSG("priority_queue::pop -- empty container");
+#endif
+
 		value = eastl::move(c.front());  // To consider: value = move_if_noexcept_assignable(c.front());
 		pop();
 	}
@@ -389,6 +413,11 @@ namespace eastl
 	template <typename T, typename Container, typename Compare>
 	inline void priority_queue<T, Container, Compare>::change(size_type n) // This function is not in the STL std::priority_queue.
 	{
+#if EASTL_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(n >= c.size()))
+			EASTL_FAIL_MSG("priority_queue::change -- out of range");
+#endif
+
 		eastl::change_heap(c.begin(), c.size(), n, comp);
 	}
 
@@ -396,6 +425,11 @@ namespace eastl
 	template <typename T, typename Container, typename Compare>
 	inline void priority_queue<T, Container, Compare>::remove(size_type n) // This function is not in the STL std::priority_queue.
 	{
+#if EASTL_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(n >= c.size()))
+			EASTL_FAIL_MSG("priority_queue::remove -- out of range");
+#endif
+
 		eastl::remove_heap(c.begin(), c.size(), n, comp);
 		c.pop_back();
 	}
@@ -488,22 +522,7 @@ namespace eastl
 } // namespace eastl
 
 
-#ifdef _MSC_VER
-	#pragma warning(pop)
-#endif
+EA_RESTORE_VC_WARNING();
 
 
 #endif // Header include guard
-
-
-
-
-
-
-
-
-
-
-
-
-

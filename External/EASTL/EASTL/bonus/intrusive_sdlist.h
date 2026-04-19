@@ -83,13 +83,13 @@ namespace eastl
 		typedef IntrusiveSDListIterator<T, Pointer, Reference>   this_type;
 		typedef IntrusiveSDListIterator<T, T*, T&>               iterator;
 		typedef IntrusiveSDListIterator<T, const T*, const T&>   const_iterator;
-		typedef eastl_size_t                                     size_type;     // See config.h for the definition of eastl_size_t, which defaults to uint32_t.
+		typedef eastl_size_t                                     size_type;     // See config.h for the definition of eastl_size_t, which defaults to size_t.
 		typedef ptrdiff_t                                        difference_type;
 		typedef T                                                value_type;
 		typedef T                                                node_type;
 		typedef Pointer                                          pointer;
 		typedef Reference                                        reference;
-		typedef EASTL_ITC_NS::forward_iterator_tag               iterator_category;
+		typedef eastl::forward_iterator_tag               iterator_category;
 
 	public:
 		pointer mpNode;
@@ -117,7 +117,7 @@ namespace eastl
 	class intrusive_sdlist_base
 	{
 	public:
-		typedef eastl_size_t size_type;     // See config.h for the definition of eastl_size_t, which defaults to uint32_t.
+		typedef eastl_size_t size_type;     // See config.h for the definition of eastl_size_t, which defaults to size_t.
 		typedef ptrdiff_t    difference_type;
 
 	protected:
@@ -173,8 +173,8 @@ namespace eastl
 		const_iterator   end() const;             ///< Returns a const_iterator pointing one-after the last element in the list.
 		const_iterator   cend() const;            ///< Returns a const_iterator pointing one-after the last element in the list.
 
-		reference        front();                 ///< Returns a reference to the first element. The list must be empty.
-		const_reference  front() const;           ///< Returns a const reference to the first element. The list must be empty.
+		reference        front();                 ///< Returns a reference to the first element. The list must not be empty.
+		const_reference  front() const;           ///< Returns a const reference to the first element. The list must not be empty.
 
 		void             push_front(value_type& value);                  ///< Adds an element to the front of the list; O(1). The element is not copied. The element must not be in any other list.
 		void             push_back(value_type& value);                   ///< Adds an element to the back of the list; O(N). The element is not copied. The element must not be in any other list.

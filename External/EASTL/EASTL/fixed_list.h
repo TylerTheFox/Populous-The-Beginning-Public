@@ -63,12 +63,12 @@ namespace eastl
 	///     OverflowAllocator      Overflow allocator, which is only used if bEnableOverflow == true. Defaults to the global heap.
 	///
 	template <typename T, size_t nodeCount, bool bEnableOverflow = true, typename OverflowAllocator = EASTLAllocatorType>
-	class fixed_list : public list<T, fixed_node_allocator<sizeof(typename list<T>::node_type), 
-								   nodeCount, EASTL_ALIGN_OF(T), 0, bEnableOverflow, OverflowAllocator> >
+	class fixed_list : public list<T, fixed_node_allocator<sizeof(typename list<T>::node_type),
+								   nodeCount, EASTL_ALIGN_OF(typename list<T>::node_type), 0, bEnableOverflow, OverflowAllocator> >
 	{
 	public:
-		typedef fixed_node_allocator<sizeof(typename list<T>::node_type), nodeCount, 
-					 EASTL_ALIGN_OF(T), 0, bEnableOverflow, OverflowAllocator> fixed_allocator_type;
+		typedef fixed_node_allocator<sizeof(typename list<T>::node_type), nodeCount,
+					 EASTL_ALIGN_OF(typename list<T>::node_type), 0, bEnableOverflow, OverflowAllocator> fixed_allocator_type;
 		typedef OverflowAllocator                                              overflow_allocator_type;
 		typedef list<T, fixed_allocator_type>                                  base_type;
 		typedef fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>   this_type;
@@ -88,7 +88,7 @@ namespace eastl
 	protected:
 		char mBuffer[fixed_allocator_type::kBufferSize]; // kBufferSize will take into account alignment requirements.
 
-		using base_type::mAllocator;
+		using base_type::internalAllocator;
 
 	public:
 		fixed_list();
@@ -112,7 +112,7 @@ namespace eastl
 		size_type max_size() const;         // Returns the max fixed size, which is the user-supplied nodeCount parameter.
 		bool      full() const;             // Returns true if the fixed space has been fully allocated. Note that if overflow is enabled, the container size can be greater than nodeCount but full() could return true because the fixed space may have a recently freed slot. 
 		bool      has_overflowed() const;   // Returns true if the allocations spilled over into the overflow allocator. Meaningful only if overflow is enabled.
-		bool      can_overflow() const;     // Returns the value of the bEnableOverflow template parameter.
+		static constexpr bool can_overflow() { return bEnableOverflow; } // Returns the value of the bEnableOverflow template parameter.
 
 		// OverflowAllocator
 		const overflow_allocator_type& get_overflow_allocator() const EA_NOEXCEPT;
@@ -131,7 +131,7 @@ namespace eastl
 		: base_type(fixed_allocator_type(mBuffer))
 	{
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
+			internalAllocator().set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
 		#endif
 	}
 
@@ -140,9 +140,6 @@ namespace eastl
 	inline fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::fixed_list(const overflow_allocator_type& overflowAllocator)
 		: base_type(fixed_allocator_type(mBuffer, overflowAllocator))
 	{
-		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
-		#endif
 	}
 
 
@@ -151,7 +148,7 @@ namespace eastl
 		: base_type(fixed_allocator_type(mBuffer))
 	{
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
+			internalAllocator().set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
 		#endif
 
 		resize(n);
@@ -163,7 +160,7 @@ namespace eastl
 		: base_type(fixed_allocator_type(mBuffer))
 	{
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
+			internalAllocator().set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
 		#endif
 
 		resize(n, value);
@@ -174,10 +171,10 @@ namespace eastl
 	inline fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::fixed_list(const this_type& x)
 		: base_type(fixed_allocator_type(mBuffer))
 	{
-		mAllocator.copy_overflow_allocator(x.mAllocator);
+		internalAllocator().copy_overflow_allocator(x.internalAllocator());
 
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(x.mAllocator.get_name());
+			internalAllocator().set_name(x.internalAllocator().get_name());
 		#endif
 
 		assign(x.begin(), x.end());
@@ -197,10 +194,10 @@ namespace eastl
 
 		// The following is currently identical to the fixed_vector(const this_type& x) code above. If it stays that
 		// way then we may want to make a shared implementation.
-		mAllocator.copy_overflow_allocator(x.mAllocator);
+		internalAllocator().copy_overflow_allocator(x.internalAllocator());
 
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(x.mAllocator.get_name());
+			internalAllocator().set_name(x.internalAllocator().get_name());
 		#endif
 
 		assign(x.begin(), x.end());
@@ -212,10 +209,10 @@ namespace eastl
 		: base_type(fixed_allocator_type(mBuffer, overflowAllocator))
 	{
 		// See comments above.
-		mAllocator.copy_overflow_allocator(x.mAllocator);
+		internalAllocator().copy_overflow_allocator(x.internalAllocator());
 
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(x.mAllocator.get_name());
+			internalAllocator().set_name(x.internalAllocator().get_name());
 		#endif
 
 		assign(x.begin(), x.end());
@@ -236,7 +233,7 @@ namespace eastl
 		: base_type(fixed_allocator_type(mBuffer))
 	{
 		#if EASTL_NAME_ENABLED
-			mAllocator.set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
+			internalAllocator().set_name(EASTL_FIXED_LIST_DEFAULT_NAME);
 		#endif
 
 		assign(first, last);
@@ -252,7 +249,7 @@ namespace eastl
 			base_type::clear();
 
 			#if EASTL_ALLOCATOR_COPY_ENABLED
-				mAllocator = x.mAllocator; // The primary effect of this is to copy the overflow allocator.
+				internalAllocator() = x.internalAllocator(); // The primary effect of this is to copy the overflow allocator.
 			#endif
 
 			base_type::assign(x.begin(), x.end()); // It would probably be better to implement this like list::operator=.
@@ -311,7 +308,7 @@ namespace eastl
 		// This can happen if the container exceeds the fixed size and then frees some of the nodes from the fixed buffer.
 		// The only simple fix for this is to take on another member variable which tracks whether this overflow
 		// has occurred at some point in the past.
-		return !mAllocator.can_allocate(); // This is the quickest way of detecting this. has_overflowed uses a different method because it can't use this quick method.
+		return !internalAllocator().can_allocate(); // This is the quickest way of detecting this. has_overflowed uses a different method because it can't use this quick method.
 	}
 
 
@@ -319,7 +316,7 @@ namespace eastl
 	inline bool fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::has_overflowed() const
 	{
 		#if EASTL_FIXED_SIZE_TRACKING_ENABLED // If we can use this faster pathway (as size() may be slow)...
-			return (mAllocator.mPool.mnPeakSize > kMaxSize);
+			return (internalAllocator().mPool.mnPeakSize > kMaxSize);
 		#else
 			return (size() > kMaxSize);
 		#endif
@@ -327,17 +324,10 @@ namespace eastl
 
 
 	template <typename T, size_t nodeCount, bool bEnableOverflow, typename OverflowAllocator>
-	inline bool fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::can_overflow() const
-	{
-		return bEnableOverflow;
-	}
-
-
-	template <typename T, size_t nodeCount, bool bEnableOverflow, typename OverflowAllocator>
 	inline const typename fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::overflow_allocator_type& 
 	fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::get_overflow_allocator() const EA_NOEXCEPT
 	{
-		return mAllocator.get_overflow_allocator();
+		return internalAllocator().get_overflow_allocator();
 	}
 
 
@@ -345,7 +335,7 @@ namespace eastl
 	inline typename fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::overflow_allocator_type& 
 	fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::get_overflow_allocator() EA_NOEXCEPT
 	{
-		return mAllocator.get_overflow_allocator();
+		return internalAllocator().get_overflow_allocator();
 	}
 
 
@@ -353,7 +343,7 @@ namespace eastl
 	inline void 
 	fixed_list<T, nodeCount, bEnableOverflow, OverflowAllocator>::set_overflow_allocator(const overflow_allocator_type& allocator)
 	{
-		mAllocator.set_overflow_allocator(allocator);
+		internalAllocator().set_overflow_allocator(allocator);
 	}
 
 

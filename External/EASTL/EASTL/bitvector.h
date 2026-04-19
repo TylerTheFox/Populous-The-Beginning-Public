@@ -19,13 +19,14 @@
 
 #include <EASTL/internal/config.h>
 #include <EASTL/vector.h>
+#include <EASTL/fixed_vector.h>
 #include <EASTL/algorithm.h>
 #include <EASTL/bitset.h>
-
-#ifdef _MSC_VER
-	#pragma warning(push)
-	#pragma warning(disable: 4480)  // nonstandard extension used: specifying underlying type for enum
+#if EASTL_EXCEPTIONS_ENABLED
+#include <stdexcept>
 #endif
+
+EA_DISABLE_VC_WARNING(4480); // nonstandard extension used: specifying underlying type for enum
 
 #if defined(EA_PRAGMA_ONCE_SUPPORTED)
 	#pragma once // Some compilers (e.g. VC++) benefit significantly from using this. We've measured 3-4% build speed improvements in apps as a result.
@@ -67,6 +68,7 @@ namespace eastl
 	public:
 		typedef eastl_size_t size_type;
 		bitvector_reference(Element* ptr, eastl_size_t i);
+		bitvector_reference(const bitvector_reference& other);
 
 		bitvector_reference& operator=(bool value);
 		bitvector_reference& operator=(const bitvector_reference& rhs);
@@ -90,7 +92,7 @@ namespace eastl
 	class bitvector_const_iterator
 	{
 	public:
-		typedef EASTL_ITC_NS::random_access_iterator_tag iterator_category;
+		typedef eastl::random_access_iterator_tag iterator_category;
 		typedef bitvector_const_iterator<Element>        this_type;
 		typedef bool                                     value_type;
 		typedef bitvector_reference<Element>             reference_type;
@@ -115,6 +117,7 @@ namespace eastl
 		bitvector_const_iterator();
 		bitvector_const_iterator(const element_type* p, eastl_size_t i);
 		bitvector_const_iterator(const reference_type& referenceType);
+		bitvector_const_iterator(const bitvector_const_iterator& other);
 
 		bitvector_const_iterator& operator++();
 		bitvector_const_iterator  operator++(int);
@@ -153,7 +156,7 @@ namespace eastl
 	class bitvector_iterator : public bitvector_const_iterator<Element>
 	{
 	public:
-		typedef EASTL_ITC_NS::random_access_iterator_tag iterator_category;
+		typedef eastl::random_access_iterator_tag iterator_category;
 		typedef bitvector_iterator                       this_type;
 		typedef bitvector_const_iterator<Element>        base_type;
 		typedef bool                                     value_type;
@@ -205,7 +208,7 @@ namespace eastl
 	class bitvector
 	{
 	public:
-		typedef bitvector<Allocator, Element>               this_type;
+		typedef bitvector<Allocator, Element, Container>    this_type;
 		typedef bool                                        value_type;
 		typedef bitvector_reference<Element>                reference;
 		typedef bool                                        const_reference;
@@ -243,12 +246,10 @@ namespace eastl
 		explicit bitvector(const allocator_type& allocator);
 		explicit bitvector(size_type n, const allocator_type& allocator = EASTL_BITVECTOR_DEFAULT_ALLOCATOR);
 		bitvector(size_type n, value_type value, const allocator_type& allocator = EASTL_BITVECTOR_DEFAULT_ALLOCATOR);
-		bitvector(const bitvector& copy);
 
 		template <typename InputIterator>
 		bitvector(InputIterator first, InputIterator last);
 
-		bitvector& operator=(const bitvector& x);
 		void swap(this_type& x);
 
 		template <typename InputIterator>
@@ -333,6 +334,9 @@ namespace eastl
 
 		bool validate() const;
 		int  validate_iterator(const_iterator i) const;
+
+		bool any() const;
+		bool all() const;
 	};
 
 
@@ -346,6 +350,14 @@ namespace eastl
 	bitvector_reference<Element>::bitvector_reference(Element* p, eastl_size_t i)
 	  : mpBitWord(p), 
 		mnBitIndex(i)
+	{
+	}
+
+
+	template <typename Element>
+	bitvector_reference<Element>::bitvector_reference(const bitvector_reference& other)
+	  : mpBitWord(other.mpBitWord), 
+		mnBitIndex(other.mnBitIndex)
 	{
 	}
 
@@ -404,6 +416,13 @@ namespace eastl
 	template <typename Element>
 	bitvector_const_iterator<Element>::bitvector_const_iterator(const reference_type& reference)
 		: mReference(reference)
+	{
+	}
+
+
+	template <typename Element>
+	bitvector_const_iterator<Element>::bitvector_const_iterator(const bitvector_const_iterator& other)
+		: mReference(other.mReference)
 	{
 	}
 
@@ -766,7 +785,7 @@ namespace eastl
 	typename bitvector<Allocator, Element, Container>::iterator
 	bitvector<Allocator, Element, Container>::begin() EA_NOEXCEPT
 	{
-		return iterator(&mContainer[0], 0);
+		return iterator(mContainer.begin(), 0);
 	}
 
 
@@ -774,7 +793,7 @@ namespace eastl
 	typename bitvector<Allocator, Element, Container>::const_iterator
 	bitvector<Allocator, Element, Container>::begin() const EA_NOEXCEPT
 	{
-		return const_iterator(&mContainer[0], 0);
+		return const_iterator(mContainer.begin(), 0);
 	}
 
 
@@ -782,7 +801,7 @@ namespace eastl
 	typename bitvector<Allocator, Element, Container>::const_iterator
 	bitvector<Allocator, Element, Container>::cbegin() const EA_NOEXCEPT
 	{
-		return const_iterator(&mContainer[0], 0);
+		return const_iterator(mContainer.begin(), 0);
 	}
 
 
@@ -1340,18 +1359,6 @@ namespace eastl
 
 
 	template <typename Allocator, typename Element, typename Container>
-	bitvector<Allocator, Element, Container>&
-	bitvector<Allocator, Element, Container>::operator=(const bitvector& rhs)
-	{
-		// The following is OK if (&rhs == this)
-		mContainer = rhs.mContainer;
-		mFreeBitCount = rhs.mFreeBitCount;
-
-		return *this;
-	}
-
-
-	template <typename Allocator, typename Element, typename Container>
 	bitvector<Allocator, Element, Container>::bitvector()
 	  : mContainer(), 
 		mFreeBitCount(0)
@@ -1390,14 +1397,6 @@ namespace eastl
 
 
 	template <typename Allocator, typename Element, typename Container>
-	bitvector<Allocator, Element, Container>::bitvector(const bitvector& copy)
-	  : mContainer(copy.mContainer), 
-		mFreeBitCount(copy.mFreeBitCount)
-	{
-	}
-
-
-	template <typename Allocator, typename Element, typename Container>
 	template <typename InputIterator>
 	bitvector<Allocator, Element, Container>::bitvector(InputIterator first, InputIterator last)
 	  : mContainer(), 
@@ -1406,6 +1405,38 @@ namespace eastl
 		assign(first, last);
 	}
 
+	template <typename Allocator, typename Element, typename Container>
+	bool bitvector<Allocator, Element, Container>::any() const
+	{
+		if (mContainer.size() == 0) 
+			return false;
+
+		for (eastl_size_t i = 0, count = mContainer.size() - 1; i < count; ++i)
+		{
+			if (mContainer[i] != 0)
+				return true;
+		}
+		Element mask = mFreeBitCount == 0 ? (Element)-1 : ((Element(1) << Element(kBitCount - mFreeBitCount)) - 1);
+		return (mContainer.back() & mask);
+	}
+
+	template <typename Allocator, typename Element, typename Container>
+	bool bitvector<Allocator, Element, Container>::all() const
+	{
+		if (mContainer.size() == 0) 
+			return true;
+
+		for (eastl_size_t i = 0, count = mContainer.size() - 1; i < count; ++i)
+		{
+			if (mContainer[i] != (~(Element)0))
+			{
+				return false;
+			}
+		}
+
+		Element mask = mFreeBitCount == 0 ? (Element)-1 : ((Element(1) << Element(kBitCount - mFreeBitCount)) - 1);
+		return (mContainer.back() & mask) == mask;
+	}
 
 
 	///////////////////////////////////////////////////////////////////////
@@ -1417,7 +1448,7 @@ namespace eastl
 						   const bitvector<Allocator, Element, Container>& b)
 	{
 		// To do: Replace this with a smart compare implementation. This is much slower than it needs to be.
-		return ((a.size() == b.size()) && equal(a.begin(), a.end(), b.begin()));
+		return ((a.size() == b.size()) && eastl::equal(a.begin(), a.end(), b.begin()));
 	}
 
 
@@ -1434,7 +1465,7 @@ namespace eastl
 						  const bitvector<Allocator, Element, Container>& b)
 	{
 		// To do: Replace this with a smart compare implementation. This is much slower than it needs to be.
-		return lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+		return eastl::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
 	}
 
 
@@ -1468,25 +1499,15 @@ namespace eastl
 		a.swap(b);
 	}
 
+	template <size_t nodeCount,
+              typename Allocator = EASTLAllocatorType, 
+              typename Element   = BitvectorWordType, 
+              typename Container = eastl::fixed_vector<Element, ((nodeCount + (sizeof(Element) << 3ULL)  - 1ULL) / (sizeof(Element) << 3ULL)), true, Allocator>>
+	using fixed_bitvector = eastl::bitvector<Allocator, Element, Container>;
 
 } // namespace eastl
 
 
-#ifdef _MSC_VER
-	#pragma warning(pop)
-#endif
-
+EA_RESTORE_VC_WARNING();
 
 #endif // Header include guard
-
-
-
-
-
-
-
-
-
-
-
-

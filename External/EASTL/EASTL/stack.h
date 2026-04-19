@@ -46,12 +46,15 @@ namespace eastl
 	/// stack
 	///
 	/// stack is an adapter class provides a LIFO (last-in, first-out) interface
-	/// via wrapping a sequence that provides at least the following operations:
+	/// via wrapping a sequence container (https://en.cppreference.com/w/cpp/named_req/SequenceContainer)
+	/// that additionally provides the following operations:
 	///     push_back
 	///     pop_back
 	///     back
 	///
-	/// In practice this means vector, deque, string, list, intrusive_list. 
+	/// In practice this means vector, deque, list, intrusive_list and (the pseudo-container) string.
+	/// 
+	/// Note: the default underlying container is vector, rather than the standard's deque.
 	///
 	template <typename T, typename Container = eastl::vector<T> >
 	class stack
@@ -102,6 +105,12 @@ namespace eastl
 		//
 		// template <class Allocator>
 		// stack(container_type&& x, const Allocator& allocator);
+		//
+		// template <class InputIt>
+		// stack(InputIt first, InputIt last);
+		//
+		// template <class InputIt, class Allocator>
+		// stack(InputIt first, InputIt last, const Allocator& allocator);
 
 		stack(std::initializer_list<value_type> ilist); // The first item in the initializer list is pushed first. C++11 doesn't specify that std::stack has initializer list support.
 
@@ -114,8 +123,8 @@ namespace eastl
 		void push(const value_type& value);
 		void push(value_type&& x);
 
-		template <class... Args>
-		void emplace_back(Args&&... args);
+		template <class... Args> EASTL_REMOVE_AT_2024_SEPT void emplace_back(Args&&... args); // use emplace() instead. they are equivalent.
+		template <class... Args> decltype(auto) emplace(Args&&... args);
 
 		void pop();
 
@@ -168,9 +177,8 @@ namespace eastl
 		// c.insert(ilist.begin(), ilist.end());
 
 		// Possibly slower solution but doesn't require an insert function.
-		for(typename std::initializer_list<value_type>::iterator it = ilist.begin(); it != ilist.end(); ++it)
+		for(const auto& value : ilist)
 		{
-			const value_type& value = *it;
 			c.push_back(value);
 		}
 	}
@@ -194,6 +202,11 @@ namespace eastl
 	inline typename stack<T, Container>::reference
 	stack<T, Container>::top()
 	{
+#if EASTL_ASSERT_ENABLED && EASTL_EMPTY_REFERENCE_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(c.empty()))
+			EASTL_FAIL_MSG("stack::top -- empty container");
+#endif
+
 		return c.back();
 	}
 
@@ -202,6 +215,11 @@ namespace eastl
 	inline typename stack<T, Container>::const_reference
 	stack<T, Container>::top() const
 	{
+#if EASTL_ASSERT_ENABLED && EASTL_EMPTY_REFERENCE_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(c.empty()))
+			EASTL_FAIL_MSG("stack::top -- empty container");
+#endif
+
 		return c.back();
 	}
 
@@ -221,16 +239,29 @@ namespace eastl
 
 
 	template <typename T, typename Container>
-	template <class... Args> 
+	template <class... Args>
 	inline void stack<T, Container>::emplace_back(Args&&... args)
 	{
-		c.emplace_back(eastl::forward<Args>(args)...);
+		emplace(eastl::forward<Args>(args)...);
+	}
+
+
+	template <typename T, typename Container>
+	template <class... Args>
+	inline decltype(auto) stack<T, Container>::emplace(Args&&... args)
+	{
+		return c.emplace_back(eastl::forward<Args>(args)...);
 	}
 
 
 	template <typename T, typename Container>
 	inline void stack<T, Container>::pop()
 	{
+#if EASTL_ASSERT_ENABLED
+		if (EASTL_UNLIKELY(c.empty()))
+			EASTL_FAIL_MSG("stack::pop -- empty container");
+#endif
+
 		c.pop_back();
 	}
 
@@ -277,6 +308,13 @@ namespace eastl
 		return (a.c == b.c);
 	}
 
+#if defined(EA_COMPILER_HAS_THREE_WAY_COMPARISON)
+	template <typename T, typename Container> requires std::three_way_comparable<Container>
+	inline synth_three_way_result<T> operator<=>(const stack<T, Container>& a, const stack<T, Container>& b)
+	{
+		return a.c <=> b.c;
+	}
+#endif
 
 	template <typename T, typename Container>
 	inline bool operator!=(const stack<T, Container>& a, const stack<T, Container>& b)
@@ -311,7 +349,6 @@ namespace eastl
 	{
 		return !(a.c < b.c);
 	}
-
 
 	template <typename T, typename Container>
 	inline void swap(stack<T, Container>& a, stack<T, Container>& b) EA_NOEXCEPT_IF((eastl::is_nothrow_swappable<typename stack<T, Container>::container_type>::value))
