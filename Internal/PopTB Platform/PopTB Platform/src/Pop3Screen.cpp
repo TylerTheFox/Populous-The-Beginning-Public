@@ -443,9 +443,26 @@ void Pop3Screen::toggleFullscreen()
 
     if (s_windowed)
     {
-        SetWindowLongPtr(hWnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+        SetWindowLongPtr(hWnd, GWL_STYLE, style);
+
+        // Scale the game up to a comfortable integer multiple that fits
+        // the screen, matching the logic in LbScreen_SetMode.
+        int deskW = GetSystemMetrics(SM_CXSCREEN);
+        int deskH = GetSystemMetrics(SM_CYSCREEN);
+        int scale = 1;
+        while ((int)s_framebufferWidth  * (scale + 1) <= deskW * 9 / 10 &&
+               (int)s_framebufferHeight * (scale + 1) <= deskH * 9 / 10)
+            scale++;
+
+        RECT rc = { 0, 0,
+                    (LONG)(s_framebufferWidth * scale),
+                    (LONG)(s_framebufferHeight * scale) };
+        AdjustWindowRect(&rc, style, FALSE);
+        int winW = rc.right - rc.left;
+        int winH = rc.bottom - rc.top;
         SetWindowPos(hWnd, HWND_NOTOPMOST,
-            100, 100, s_backbufferWidth, s_backbufferHeight,
+            (deskW - winW) / 2, (deskH - winH) / 2, winW, winH,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         s_border = true;
     }

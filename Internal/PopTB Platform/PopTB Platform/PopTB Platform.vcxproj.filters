@@ -165,6 +165,9 @@
     <ClInclude Include="include\LbColour.h">
       <Filter>Headers</Filter>
     </ClInclude>
+    <ClInclude Include="include\lodepng.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
     <ClInclude Include="include\Bullfrog2.h">
       <Filter>Headers</Filter>
     </ClInclude>
@@ -233,6 +236,9 @@
       <Filter>Source\EASTL</Filter>
     </ClCompile>
     <ClCompile Include="src\Pop3Draw.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\lodepng.cpp">
       <Filter>Source</Filter>
     </ClCompile>
     <ClCompile Include="src\LbAppData.cpp">

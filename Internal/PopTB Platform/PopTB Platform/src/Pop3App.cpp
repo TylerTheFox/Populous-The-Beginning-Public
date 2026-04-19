@@ -277,6 +277,12 @@ static void releaseCursorClip()
     ClipCursor(nullptr);
 }
 
+// True while the user is dragging the title bar or resizing the window
+// (between WM_ENTERSIZEMOVE and WM_EXITSIZEMOVE). During this interval
+// we must NOT re-clip the cursor — doing so fights the window drag and
+// makes the window jump or stick.
+static bool _inSizeMove = false;
+
 Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam)
 {
     HWND hWnd = (HWND)hwnd;
@@ -334,26 +340,47 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
         default:;
         }
         Pop3Input::resetKeys();
-        // Client rect may have moved in screen coords — re-clip.
-        if (_active)
-            clipCursorToClientRect(hWnd);
-        else
-            releaseCursorClip();
+        // Client rect may have moved in screen coords — re-clip, but NOT
+        // while the user is dragging/resizing (WM_SIZE fires continuously
+        // during a resize drag; re-clipping would fight the resize).
+        if (!_inSizeMove)
+        {
+            if (_active)
+                clipCursorToClientRect(hWnd);
+            else
+                releaseCursorClip();
+        }
         break;
     case WM_MOVE:
-        // Window moved — the client rect's screen position changed, so the
-        // existing clip is no longer aligned. Re-clip if we still own focus.
-        if (_active)
+        // Window moved — re-clip unless the user is actively dragging the
+        // title bar. WM_MOVE fires for every pixel of a drag; re-clipping
+        // would snap the cursor back and make the window unmovable.
+        if (_active && !_inSizeMove)
             clipCursorToClientRect(hWnd);
         break;
     case WM_ACTIVATE:
-        switch (wParam)
+        switch (LOWORD((WPARAM)wParam))
         {
         case WA_ACTIVE:
-        case WA_CLICKACTIVE:
             _active = true;
             clipCursorToClientRect(hWnd);
             break;
+        case WA_CLICKACTIVE:
+        {
+            _active = true;
+            // Only clip if the click landed inside the client area. A
+            // title-bar / border click will start a drag/resize — clipping
+            // now would snap the cursor off the title bar and make the
+            // window jump to the bottom of the screen.
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hWnd, &pt);
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+            if (PtInRect(&rc, pt))
+                clipCursorToClientRect(hWnd);
+            break;
+        }
         case WA_INACTIVE:
             _active = false;
             releaseCursorClip();
@@ -364,10 +391,12 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
         break;
     case WM_ENTERSIZEMOVE:
         // User grabbed the title bar or a resize edge — release so they can
-        // drag past the window's own rect. We'll re-clip on WM_EXITSIZEMOVE.
+        // drag freely. We'll re-clip on WM_EXITSIZEMOVE.
+        _inSizeMove = true;
         releaseCursorClip();
         break;
     case WM_EXITSIZEMOVE:
+        _inSizeMove = false;
         if (_active)
             clipCursorToClientRect(hWnd);
         break;
