@@ -47,6 +47,19 @@ public:
         Alpha = 0xff;
     };
 
+    // SLONG (signed long) disambiguator for C++20 /permissive-: distinct from int on Win32 ABI,
+    // so without this overload a SLONG arg is ambiguous between TbColour(int) and TbColour(UBYTE).
+    TbColour(SLONG Ind)
+    {
+        ASSERT(Ind >= 0);
+        ASSERT(Ind < 256);
+        Index = (UBYTE)Ind;
+        Red = _lbGlobalPalette.Entry[Index].Red;
+        Green = _lbGlobalPalette.Entry[Index].Green;
+        Blue = _lbGlobalPalette.Entry[Index].Blue;
+        Alpha = 0xff;
+    };
+
     TbColour(UBYTE r, UBYTE g, UBYTE b)
     {
         Set(r, g, b);
