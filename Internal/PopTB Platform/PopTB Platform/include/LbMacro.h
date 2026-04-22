@@ -1,5 +1,8 @@
 #pragma once
 #include    "Pop3Types.h"
+#include    <intrin.h>
+#include    <emmintrin.h>
+#include    <stdlib.h>
 
 //***************************************************************************
 // Utility macros and functions
@@ -23,15 +26,13 @@ return (a > b ? a : b);
 //***************************************************************************
 //	LB_SWAP_LONG_BYTES
 //***************************************************************************
+// Formerly used inline __asm { bswap eax }. _byteswap_ulong is a MSVC
+// intrinsic that emits the same bswap instruction on x86/x64 and lets the
+// compiler optimize across the call site (inline __asm is an optimization
+// barrier).
 inline long LB_SWAP_LONG_BYTES(long l)
 {
-    __asm
-    {
-        mov eax, l
-        bswap eax
-        mov l, eax
-    }
-    return l;
+    return (long)_byteswap_ulong((unsigned long)l);
 }
 
 //***************************************************************************
@@ -47,24 +48,18 @@ inline long LB_SWAP_LONG_BYTES(long l)
 //***************************************************************************
 //	LB_HIGHER_POWER2
 //***************************************************************************
-#if defined(__MSC__) && defined(__cplusplus)
+// Formerly:  bsr ecx, value; inc ecx; mov eax, 1; shl eax, cl
+// Semantics: return 1 << (index_of_highest_set_bit(value) + 1) — the next
+// power-of-two strictly greater than value. Uses _BitScanReverse, which
+// emits the same bsr instruction. Note: _BitScanReverse's result is
+// undefined when value == 0 (same as bsr); callers have always been
+// responsible for that case.
 inline unsigned long LB_HIGHER_POWER2(unsigned long value)
 {
-    unsigned int return_value;
-    __asm
-    {
-        mov eax, value
-        bsr ecx, eax
-        inc ecx
-        mov eax, 1
-        shl eax, cl
-        mov return_value, eax
-    }
-    return return_value;
+    unsigned long index;
+    _BitScanReverse(&index, value);
+    return 1UL << (index + 1);
 }
-#else
-#error LB_HIGHER_POWER2 not defined in non MSC compiler
-#endif
 
 
 //***************************************************************************
@@ -80,36 +75,32 @@ const UINT LB_MAX_PATH = _MAX_PATH;
 //***************************************************************************
 // LB_FTOI :  Uses the fistp instruction to convert a float to an int
 //***************************************************************************
-#define LB_FTOI(_i,_f)	{								\
-							float ff = (_f);			\
-							__asm fld	ff				\
-							__asm fistp	dword ptr _i	\
-						}
+// Formerly:  fld ff; fistp dword ptr _i
+// Semantics: rounds to int using the FPU's current rounding mode (default:
+// round-to-nearest-even). A plain `(int)f` truncates and would produce
+// different results for non-integer inputs — so we use _mm_cvtss_si32,
+// which rounds via MXCSR (also defaulting to round-to-nearest-even),
+// matching the original rounding behavior.
+#define LB_FTOI(_i,_f)  do {                                         \
+                            (_i) = _mm_cvtss_si32(_mm_set_ss((_f))); \
+                        } while (0)
 
 
 //***************************************************************************
 // LB_ROTL :  Rotate a number left by a certain amount
 //***************************************************************************
+// _rotl is a MSVC intrinsic that lowers to the single rol instruction.
 inline ULONG LB_ROTL(ULONG value, ULONG amount)
 {
-    __asm
-    {
-        mov cl, byte ptr amount
-        rol value, cl
-    }
-    return value;
+    return (ULONG)_rotl((unsigned int)value, (int)amount);
 }
 
 
 //***************************************************************************
 // LB_ROTR :  Rotate a number right by a certain amount
 //***************************************************************************
+// _rotr is a MSVC intrinsic that lowers to the single ror instruction.
 inline ULONG LB_ROTR(ULONG value, ULONG amount)
 {
-    __asm
-    {
-        mov cl, byte ptr amount
-        ror value, cl
-    }
-    return value;
+    return (ULONG)_rotr((unsigned int)value, (int)amount);
 }
