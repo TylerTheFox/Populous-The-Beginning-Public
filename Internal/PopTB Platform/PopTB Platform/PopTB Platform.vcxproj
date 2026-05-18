@@ -237,8 +237,8 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\SFML-2.5.1\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\SFML-3.1.0\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;SFML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -256,13 +256,13 @@
     </ClCompile>
     <Lib>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
-      <AdditionalDependencies>snappy32.lib;SDL2.lib;SDL2main.lib;sfml-audio-d.lib;sfml-system-d.lib;openal32.lib;flac.lib;vorbisenc.lib;vorbisfile.lib;vorbis.lib;ogg.lib;d3d9.lib;d3dx9.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>snappy32.lib;SDL2.lib;SDL2main.lib;sfml-audio-s-d.lib;sfml-system-s-d.lib;d3d9.lib;d3dx9.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <TargetMachine>MachineX86</TargetMachine>
       <SubSystem>Windows</SubSystem>
       <Name>PopTBEngine</Name>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <AdditionalOptions>/IGNORE:4006 /IGNORE:4221 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\..\External\poco-1.6.1\lib;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\lib\x86;$(ProjectDir)\..\..\..\External\snappy\lib;$(ProjectDir)\..\..\..\External\SFML-2.5.1\lib;$(ProjectDir)\..\..\..\External\DX9\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\..\External\poco-1.6.1\lib;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\lib\x86;$(ProjectDir)\..\..\..\External\snappy\lib;$(ProjectDir)\..\..\..\External\SFML-3.1.0\lib;$(ProjectDir)\..\..\..\External\DX9\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
@@ -278,8 +278,8 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\SFML-2.5.1\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\SFML-3.1.0\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;SFML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <CompileAs>CompileAsCpp</CompileAs>
@@ -299,13 +299,13 @@
     </Link>
     <Lib>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
-      <AdditionalDependencies>snappy32.lib;SDL2.lib;SDL2main.lib;sfml-audio.lib;sfml-system.lib;openal32.lib;flac.lib;vorbisenc.lib;vorbisfile.lib;vorbis.lib;ogg.lib;d3d9.lib;d3dx9.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>snappy32.lib;SDL2.lib;SDL2main.lib;sfml-audio-s.lib;sfml-system-s.lib;d3d9.lib;d3dx9.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <Name>PopTBEngine</Name>
       <SubSystem>Windows</SubSystem>
       <TargetMachine>MachineX86</TargetMachine>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <AdditionalOptions>/IGNORE:4006 /IGNORE:4221 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\..\External\poco-1.6.1\lib;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\lib\x86;$(ProjectDir)\..\..\..\External\snappy\lib;$(ProjectDir)\..\..\..\External\SFML-2.5.1\lib;$(ProjectDir)\..\..\..\External\DX9\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\..\External\poco-1.6.1\lib;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\lib\x86;$(ProjectDir)\..\..\..\External\snappy\lib;$(ProjectDir)\..\..\..\External\SFML-3.1.0\lib;$(ProjectDir)\..\..\..\External\DX9\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>

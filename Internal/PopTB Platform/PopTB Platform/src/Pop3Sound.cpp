@@ -57,8 +57,10 @@ bool Pop3SoundBuffer::loadFromFile(const char* path)
 // Pop3SoundChannel
 // ---------------------------------------------------------------------------
 
+// sf::Sound requires a SoundBuffer at construction in SFML 3, so impl starts
+// null and is allocated lazily on the first setBuffer() call.
 Pop3SoundChannel::Pop3SoundChannel()
-	: impl(new sf::Sound())
+	: impl(nullptr)
 {
 }
 
@@ -69,56 +71,62 @@ Pop3SoundChannel::~Pop3SoundChannel()
 
 void Pop3SoundChannel::setBuffer(const Pop3SoundBuffer& buffer)
 {
-	asSound(impl)->setBuffer(*asBuffer(buffer.impl));
+	if (!impl)
+		impl = new sf::Sound(*asBuffer(buffer.impl));
+	else
+		asSound(impl)->setBuffer(*asBuffer(buffer.impl));
 }
 
 void Pop3SoundChannel::play()
 {
-	asSound(impl)->play();
+	if (impl) asSound(impl)->play();
 }
 
 void Pop3SoundChannel::stop()
 {
-	asSound(impl)->stop();
+	if (impl) asSound(impl)->stop();
 }
 
 void Pop3SoundChannel::pause()
 {
-	asSound(impl)->pause();
+	if (impl) asSound(impl)->pause();
 }
 
 Pop3SoundChannel::Status Pop3SoundChannel::getStatus() const
 {
-	return static_cast<Status>(asSound(impl)->getStatus());
+	if (!impl) return Stopped;
+	return static_cast<Status>(static_cast<int>(asSound(impl)->getStatus()));
 }
 
 void Pop3SoundChannel::setVolume(float volume)
 {
-	asSound(impl)->setVolume(volume);
+	if (impl) asSound(impl)->setVolume(volume);
 }
 
 float Pop3SoundChannel::getVolume() const
 {
+	if (!impl) return 0.f;
 	return asSound(impl)->getVolume();
 }
 
 void Pop3SoundChannel::setPitch(float pitch)
 {
-	asSound(impl)->setPitch(pitch);
+	if (impl) asSound(impl)->setPitch(pitch);
 }
 
 void Pop3SoundChannel::setLoop(bool loop)
 {
-	asSound(impl)->setLoop(loop);
+	if (impl) asSound(impl)->setLooping(loop);
 }
 
 void Pop3SoundChannel::setPosition(float x, float y, float z)
 {
-	asSound(impl)->setPosition(x, y, z);
+	if (impl) asSound(impl)->setPosition({x, y, z});
 }
 
 void Pop3SoundChannel::getPosition(float& x, float& y, float& z) const
 {
+	if (!impl) { x = y = z = 0.f; return; }
 	sf::Vector3f pos = asSound(impl)->getPosition();
 	x = pos.x;
 	y = pos.y;
@@ -127,25 +135,29 @@ void Pop3SoundChannel::getPosition(float& x, float& y, float& z) const
 
 void Pop3SoundChannel::setRelativeToListener(bool relative)
 {
-	asSound(impl)->setRelativeToListener(relative);
+	if (impl) asSound(impl)->setRelativeToListener(relative);
 }
 
 void Pop3SoundChannel::setMinDistance(float distance)
 {
-	asSound(impl)->setMinDistance(distance);
+	if (impl) asSound(impl)->setMinDistance(distance);
 }
 
 void Pop3SoundChannel::setAttenuation(float attenuation)
 {
-	asSound(impl)->setAttenuation(attenuation);
+	if (impl) asSound(impl)->setAttenuation(attenuation);
 }
 
 // ---------------------------------------------------------------------------
 // Pop3MusicStream
 // ---------------------------------------------------------------------------
 
+// sf::Music (AudioResource) initialises the miniaudio backend on construction.
+// Doing that at static-init time (before the rest of the program is ready)
+// corrupts the CRT state and crashes unrelated static initialisers, so impl
+// starts null and is allocated lazily on the first openFromFile() call.
 Pop3MusicStream::Pop3MusicStream()
-	: impl(new sf::Music())
+	: impl(nullptr)
 {
 }
 
@@ -156,56 +168,63 @@ Pop3MusicStream::~Pop3MusicStream()
 
 bool Pop3MusicStream::openFromFile(const char* path)
 {
+	if (!impl)
+		impl = new sf::Music();
 	return asMusic(impl)->openFromFile(path);
 }
 
 void Pop3MusicStream::play()
 {
-	asMusic(impl)->play();
+	if (impl) asMusic(impl)->play();
 }
 
 void Pop3MusicStream::stop()
 {
-	asMusic(impl)->stop();
+	if (impl) asMusic(impl)->stop();
 }
 
 void Pop3MusicStream::pause()
 {
-	asMusic(impl)->pause();
+	if (impl) asMusic(impl)->pause();
 }
 
 Pop3MusicStream::Status Pop3MusicStream::getStatus() const
 {
-	return static_cast<Status>(asMusic(impl)->getStatus());
+	if (!impl) return Stopped;
+	return static_cast<Status>(static_cast<int>(asMusic(impl)->getStatus()));
 }
 
 void Pop3MusicStream::setVolume(float volume)
 {
-	asMusic(impl)->setVolume(volume);
+	if (impl) asMusic(impl)->setVolume(volume);
 }
 
 float Pop3MusicStream::getVolume() const
 {
+	if (!impl) return 0.f;
 	return asMusic(impl)->getVolume();
 }
 
 void Pop3MusicStream::setLoop(bool loop)
 {
-	asMusic(impl)->setLoop(loop);
+	if (impl) asMusic(impl)->setLooping(loop);
 }
 
 bool Pop3MusicStream::getLoop() const
 {
-	return asMusic(impl)->getLoop();
+	if (!impl) return false;
+	return asMusic(impl)->isLooping();
 }
 
 int Pop3MusicStream::getDurationMs() const
 {
+	if (!impl) return 0;
 	return asMusic(impl)->getDuration().asMilliseconds();
 }
 
 int Pop3MusicStream::getPlayingOffsetMs() const
 {
+	if (!impl) return 0;
 	return asMusic(impl)->getPlayingOffset().asMilliseconds();
 }
 
@@ -215,12 +234,12 @@ int Pop3MusicStream::getPlayingOffsetMs() const
 
 void Pop3AudioListener::setPosition(float x, float y, float z)
 {
-	sf::Listener::setPosition(x, y, z);
+	sf::Listener::setPosition({x, y, z});
 }
 
 void Pop3AudioListener::setDirection(float x, float y, float z)
 {
-	sf::Listener::setDirection(x, y, z);
+	sf::Listener::setDirection({x, y, z});
 }
 
 void Pop3AudioListener::getPosition(float& x, float& y, float& z)
