@@ -29,6 +29,7 @@
     <ClInclude Include="include\Pop3Point.h" />
     <ClInclude Include="include\Pop3Script.h" />
     <ClInclude Include="include\Pop3Size.h" />
+    <ClInclude Include="include\Pop3MoviePlayer.h" />
     <ClInclude Include="include\Pop3Sound.h" />
     <ClInclude Include="include\Pop3Types.h" />
     <ClInclude Include="include\lodepng.h" />
@@ -88,6 +89,7 @@
     <ClCompile Include="src\Pop3NetworkUDP.cpp" />
     <ClCompile Include="src\Pop3Point.cpp" />
     <ClCompile Include="src\Pop3Size.cpp" />
+    <ClCompile Include="src\Pop3MoviePlayer.cpp" />
     <ClCompile Include="src\Pop3Sound.cpp" />
     <ClCompile Include="src\Pop3Screen.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -237,7 +239,7 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\SFML-3.1.0\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\ffmpeg\inc;$(ProjectDir)\..\..\..\External\SFML-3.1.0\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;SFML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -278,7 +280,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\SFML-3.1.0\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\include;$(SolutionDir)Library8\DX9\Include;$(ProjectDir)\..\..\..\External\ffmpeg\inc;$(ProjectDir)\..\..\..\External\SFML-3.1.0\include;$(ProjectDir)\..\..\..\External\SDL2-2.0.5\include;$(ProjectDir)\..\..\..\External\snappy\include;$(ProjectDir)\..\..\..\External\poco-1.6.1\Foundation\include;$(ProjectDir)\..\..\..\External\EASTL;$(ProjectDir)\..\..\..\External\EASTL\Packages;$(ProjectDir)\..\..\..\External\poco-1.6.1\Net\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;SFML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
