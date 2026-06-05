@@ -6,6 +6,12 @@
 #include <LbSprite.h>
 
 //***************************************************************************
+// Phase T1: glyph emit hooks (see LbText.h). NULL by default = SW path.
+//***************************************************************************
+LbGlyphEmitFn          _lbpGlyphEmitHook          = NULL;
+LbGlyphEmitOneColourFn _lbpGlyphEmitOneColourHook = NULL;
+
+//***************************************************************************
 // Static callback functions for TbTextRender
 //***************************************************************************
 static void __cdecl SpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT cChar)
@@ -18,7 +24,10 @@ static void __cdecl SpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT 
 static UINT __cdecl SpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT cChar, TbColour col)
 {
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
-    BfDraw_Sprite(x, y, spr);
+    if (_lbpGlyphEmitHook)
+        _lbpGlyphEmitHook(x, y, spr);
+    else
+        BfDraw_Sprite(x, y, spr);
     return spr->Width;
 }
 
@@ -32,7 +41,10 @@ static void __cdecl OneColourSpriteRender_OnMeasure(void *pParam, Pop3Size *lpSi
 static UINT __cdecl OneColourSpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT cChar, TbColour col)
 {
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
-    BfDraw_OneColourSprite(x, y, spr, col);
+    if (_lbpGlyphEmitOneColourHook)
+        _lbpGlyphEmitOneColourHook(x, y, spr, col);
+    else
+        BfDraw_OneColourSprite(x, y, spr, col);
     return spr->Width;
 }
 

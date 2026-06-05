@@ -12,6 +12,20 @@
 #include <LbColour.h>
 
 class Pop3Rect;
+struct TbSprite;
+
+//***************************************************************************
+// Phase T1: per-glyph emit hooks. When non-NULL, OnDrawChar in the sprite
+// font renderers calls these instead of BfDraw_Sprite / BfDraw_OneColourSprite.
+// Game code installs them at startup (Game.cpp post-HwRender::init) to route
+// glyphs through hw_ui_draw_sprite / hw_ui_draw_one_colour_sprite so text
+// emits into the HW overlay layer alongside other UI sprites. Default NULL
+// preserves SW behavior in SW-only builds and before init.
+//***************************************************************************
+typedef void (LB_CALLBACK *LbGlyphEmitFn)(SINT x, SINT y, const TbSprite *spr);
+typedef void (LB_CALLBACK *LbGlyphEmitOneColourFn)(SINT x, SINT y, const TbSprite *spr, TbColour col);
+LB_EXTERN LbGlyphEmitFn          _lbpGlyphEmitHook;
+LB_EXTERN LbGlyphEmitOneColourFn _lbpGlyphEmitOneColourHook;
 
 //***************************************************************************
 // LbDraw_CheapText : Draw the built-in quick text at the given byte surface

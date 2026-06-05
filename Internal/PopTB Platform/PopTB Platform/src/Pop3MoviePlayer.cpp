@@ -70,6 +70,14 @@ public:
 
     void markEof() { m_eof.store(true, std::memory_order_release); }
 
+    // Interleaved sample count currently queued. Used by the decode
+    // loop to decide whether to read more packets vs. sleep.
+    std::size_t queued() const
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        return m_queue.size();
+    }
+
 private:
     bool onGetData(Chunk& out) override
     {
@@ -78,7 +86,10 @@ private:
         if (m_queue.empty())
         {
             if (m_eof.load(std::memory_order_acquire)) return false;
-            m_silence.assign(64 * 2, 0);
+            // ~20 ms of silence per pull during an underrun — small enough
+            // not to mask audible recovery, big enough not to spin SFML's
+            // onGetData loop at thousands of Hz.
+            m_silence.assign(882 * 2, 0);
             out.samples = m_silence.data();
             out.sampleCount = m_silence.size();
             return true;
@@ -288,17 +299,8 @@ bool play_blocking(const char*                   path,
     }
     if (videoIdx < 0) return false;
 
-    int audioIdx = -1;
-    if (!audioStreams.empty())
-    {
-        const int track = (audio_track >= 0 && (size_t)audio_track < audioStreams.size())
-                              ? audio_track : 0;
-        audioIdx = audioStreams[(size_t)track];
-    }
-
     AvCodecCtxPtr vctx = open_decoder(fmt.get(), videoIdx);
     if (!vctx) return false;
-    AvCodecCtxPtr actx = (audioIdx >= 0) ? open_decoder(fmt.get(), audioIdx) : AvCodecCtxPtr();
 
     const int videoW = vctx->width;
     const int videoH = vctx->height;
@@ -316,34 +318,58 @@ bool play_blocking(const char*                   path,
     std::vector<unsigned char> bgra((std::size_t)videoW * (std::size_t)videoH * 4u);
     const int bgraPitch = videoW * 4;
 
-    FmvAudioStream audio;
-    SwrCtxPtr swr;
-    int outChannels = 0;
-    int outSampleRate = 0;
-    bool audioReady = false;
+    // ---- Audio channels ----
+    // TGQ files carry parallel audio streams — typically background
+    // music plus one or more voiceovers. The 1998 EA uV player picked
+    // ONE via uV_SelectAudioTrack (1-based), which is why call sites
+    // still pass `audio_track` (English=0=default, German=2, French=3,
+    // Dutch=4, etc.); on TGQs that bundle music + voiceover we have to
+    // play every audio stream concurrently or the voiceover goes
+    // missing. `audio_track` kept for future use; if a multi-language
+    // file produces layered voiceovers we can narrow this back down.
+    (void)audio_track;
 
-    if (actx)
+    struct AudioChannel
     {
-        outChannels   = (actx->ch_layout.nb_channels >= 2) ? 2 : 1;
-        outSampleRate = actx->sample_rate > 0 ? actx->sample_rate : 44100;
+        int                              streamIdx     = -1;
+        AvCodecCtxPtr                    ctx;
+        SwrCtxPtr                        swr;
+        std::unique_ptr<FmvAudioStream>  sfml;
+        int                              outChannels   = 0;
+        int                              outSampleRate = 0;
+    };
+    std::vector<AudioChannel> audioChannels;
+
+    const float kVolume0_100 =
+        (float)std::max(0, std::min(255, audio_volume_0_255)) * (100.0f / 255.0f);
+
+    for (int ai : audioStreams)
+    {
+        AudioChannel ch;
+        ch.streamIdx = ai;
+        ch.ctx = open_decoder(fmt.get(), ai);
+        if (!ch.ctx) continue;
+
+        ch.outChannels   = (ch.ctx->ch_layout.nb_channels >= 2) ? 2 : 1;
+        ch.outSampleRate = ch.ctx->sample_rate > 0 ? ch.ctx->sample_rate : 44100;
 
         AVChannelLayout outLayout;
-        av_channel_layout_default(&outLayout, outChannels);
+        av_channel_layout_default(&outLayout, ch.outChannels);
 
         SwrContext* rawSwr = nullptr;
+        bool ok = false;
         if (swr_alloc_set_opts2(&rawSwr,
-                                &outLayout, AV_SAMPLE_FMT_S16, outSampleRate,
-                                &actx->ch_layout, actx->sample_fmt, actx->sample_rate,
+                                &outLayout, AV_SAMPLE_FMT_S16, ch.outSampleRate,
+                                &ch.ctx->ch_layout, ch.ctx->sample_fmt, ch.ctx->sample_rate,
                                 0, nullptr) == 0 && rawSwr)
         {
             if (swr_init(rawSwr) >= 0)
             {
-                swr.reset(rawSwr);
-                audio.start((unsigned)outChannels, (unsigned)outSampleRate);
-                const float vol = (float)std::max(0, std::min(255, audio_volume_0_255))
-                                  * (100.0f / 255.0f);
-                audio.setVolume(vol);
-                audioReady = true;
+                ch.swr.reset(rawSwr);
+                ch.sfml = std::make_unique<FmvAudioStream>();
+                ch.sfml->start((unsigned)ch.outChannels, (unsigned)ch.outSampleRate);
+                ch.sfml->setVolume(kVolume0_100);
+                ok = true;
             }
             else
             {
@@ -351,7 +377,11 @@ bool play_blocking(const char*                   path,
             }
         }
         av_channel_layout_uninit(&outLayout);
+        if (ok)
+            audioChannels.push_back(std::move(ch));
     }
+
+    const bool audioReady = !audioChannels.empty();
 
     AvPacketPtr pkt(av_packet_alloc());
     AvFramePtr  vframe(av_frame_alloc());
@@ -364,101 +394,199 @@ bool play_blocking(const char*                   path,
 
     if (quit_flag) *quit_flag = 0;
     bool firstFramePresented = false;
+    bool eofReached = false;
+
+
+    // -----------------------------------------------------------------
+    // Helpers (lambdas capture local FFmpeg state).
+    //
+    //   read_and_dispatch() reads one packet from the demuxer and sends
+    //   it to the matching decoder; returns 1 on success, 0 on EOF
+    //   (decoders flushed with a null packet), -1 on hard error.
+    //
+    //   drain_audio() pulls every available decoded audio frame, resamples
+    //   to s16 stereo/mono, and pushes into the SFML queue. Cheap when
+    //   the decoder is empty (single AVERROR(EAGAIN) check).
+    // -----------------------------------------------------------------
+    auto read_and_dispatch = [&]() -> int
+    {
+        int rr = av_read_frame(fmt.get(), pkt.get());
+        if (rr < 0)
+        {
+            avcodec_send_packet(vctx.get(), nullptr);
+            for (auto& ch : audioChannels)
+                avcodec_send_packet(ch.ctx.get(), nullptr);
+            return 0;
+        }
+        if (pkt->stream_index == videoIdx)
+        {
+            avcodec_send_packet(vctx.get(), pkt.get());
+        }
+        else
+        {
+            for (auto& ch : audioChannels)
+            {
+                if (pkt->stream_index == ch.streamIdx)
+                {
+                    avcodec_send_packet(ch.ctx.get(), pkt.get());
+                    break;
+                }
+            }
+        }
+        av_packet_unref(pkt.get());
+        return 1;
+    };
+
+    auto drain_audio = [&]()
+    {
+        for (auto& ch : audioChannels)
+        {
+            while (avcodec_receive_frame(ch.ctx.get(), aframe.get()) >= 0)
+            {
+                const int maxOut = (int)av_rescale_rnd(
+                    swr_get_delay(ch.swr.get(), ch.ctx->sample_rate) + aframe->nb_samples,
+                    ch.outSampleRate, ch.ctx->sample_rate, AV_ROUND_UP);
+                std::vector<std::int16_t> tmp((std::size_t)maxOut * ch.outChannels);
+                std::int16_t* outBufs[1] = { tmp.data() };
+                int outSamples = swr_convert(
+                    ch.swr.get(),
+                    reinterpret_cast<uint8_t**>(outBufs), maxOut,
+                    const_cast<const uint8_t**>(aframe->extended_data),
+                    aframe->nb_samples);
+                if (outSamples > 0)
+                    ch.sfml->push(tmp.data(),
+                                  (std::size_t)outSamples * ch.outChannels);
+                av_frame_unref(aframe.get());
+            }
+        }
+    };
+
+    // Per-channel low-water (~250 ms): if any channel is below, prefer
+    // reading a packet over sleeping. Per-channel prebuffer (~500 ms):
+    // initial warmup before the first video frame goes up.
+    auto any_channel_below_lowwater = [&]() -> bool
+    {
+        for (auto& ch : audioChannels)
+        {
+            const std::size_t lw =
+                (std::size_t)ch.outSampleRate * (std::size_t)ch.outChannels / 4u;
+            if (ch.sfml->queued() < lw) return true;
+        }
+        return false;
+    };
+
+    auto any_channel_below_prebuffer = [&]() -> bool
+    {
+        for (auto& ch : audioChannels)
+        {
+            const std::size_t pb =
+                (std::size_t)ch.outSampleRate * (std::size_t)ch.outChannels / 2u;
+            if (ch.sfml->queued() < pb) return true;
+        }
+        return false;
+    };
+
+    // Prebuffer ~500 ms of audio on every channel before the first
+    // video frame goes up so SFML's streaming thread has runway and
+    // doesn't start with an underrun. Skipped when there are no audio
+    // streams in the file.
+    if (audioReady)
+    {
+        while (any_channel_below_prebuffer())
+        {
+            int r = read_and_dispatch();
+            drain_audio();
+            if (r <= 0) { if (r == 0) eofReached = true; break; }
+            if (pump_and_check_quit(idt, quit_flag)) { if (quit_flag) *quit_flag = 0; goto done; }
+        }
+    }
 
     for (;;)
     {
         if (pump_and_check_quit(idt, quit_flag)) { if (quit_flag) *quit_flag = 0; break; }
 
-        int rr = av_read_frame(fmt.get(), pkt.get());
-        if (rr < 0)
+        // Receive the next decoded video frame, demuxing more packets on
+        // demand. The decoder returns EAGAIN until it has enough input
+        // buffered; we keep feeding packets (and draining audio as a side
+        // effect) until either a frame pops out or the file hits EOF.
+        int rr;
+        while ((rr = avcodec_receive_frame(vctx.get(), vframe.get())) == AVERROR(EAGAIN))
         {
-            avcodec_send_packet(vctx.get(), nullptr);
-            if (actx) avcodec_send_packet(actx.get(), nullptr);
+            if (eofReached) break;
+            int r = read_and_dispatch();
+            if (r == 0) eofReached = true;
+            drain_audio();
+            if (pump_and_check_quit(idt, quit_flag)) { if (quit_flag) *quit_flag = 0; goto done; }
         }
-        if (rr >= 0 && pkt->stream_index == videoIdx)            avcodec_send_packet(vctx.get(), pkt.get());
-        else if (rr >= 0 && actx && pkt->stream_index == audioIdx) avcodec_send_packet(actx.get(), pkt.get());
-        if (rr >= 0) av_packet_unref(pkt.get());
+        if (rr < 0) break;   // genuine EOF or decoder error — we are done
 
-        // ---- audio drain ----
-        if (audioReady)
+        int64_t pts = vframe->best_effort_timestamp;
+        if (pts == AV_NOPTS_VALUE) pts = vframe->pts;
+        double ptsSec = (pts == AV_NOPTS_VALUE)
+                            ? 0.0
+                            : (double)pts * (double)vtb.num / (double)vtb.den;
+
+        // Wait until the frame's presentation time. While we wait, keep
+        // window messages flowing AND keep audio fed — underrun in this
+        // window is the classic source of cinematic-audio glitching.
+        for (;;)
         {
-            while (avcodec_receive_frame(actx.get(), aframe.get()) >= 0)
+            if (pump_and_check_quit(idt, quit_flag)) { if (quit_flag) *quit_flag = 0; goto done; }
+            const double elapsed = std::chrono::duration<double>(clock::now() - t0).count();
+            if (elapsed + 0.001 >= ptsSec) break;
+
+            if (audioReady && !eofReached && any_channel_below_lowwater())
             {
-                const int maxOut = (int)av_rescale_rnd(
-                    swr_get_delay(swr.get(), actx->sample_rate) + aframe->nb_samples,
-                    outSampleRate, actx->sample_rate, AV_ROUND_UP);
-                std::vector<std::int16_t> tmp((std::size_t)maxOut * outChannels);
-                std::int16_t* outBufs[1] = { tmp.data() };
-                int outSamples = swr_convert(
-                    swr.get(),
-                    reinterpret_cast<uint8_t**>(outBufs), maxOut,
-                    const_cast<const uint8_t**>(aframe->extended_data),
-                    aframe->nb_samples);
-                if (outSamples > 0)
-                    audio.push(tmp.data(), (std::size_t)outSamples * outChannels);
-                av_frame_unref(aframe.get());
+                int r = read_and_dispatch();
+                if (r == 0) eofReached = true;
+                drain_audio();
             }
-        }
-
-        // ---- video drain ----
-        bool gotVideo = false;
-        while (avcodec_receive_frame(vctx.get(), vframe.get()) >= 0)
-        {
-            int64_t pts = vframe->best_effort_timestamp;
-            if (pts == AV_NOPTS_VALUE) pts = vframe->pts;
-            double ptsSec = (pts == AV_NOPTS_VALUE)
-                                ? 0.0
-                                : (double)pts * (double)vtb.num / (double)vtb.den;
-
-            // Wait until pts; keep window responsive during the wait.
-            for (;;)
+            else
             {
-                if (pump_and_check_quit(idt, quit_flag)) break;
-                const double elapsed =
-                    std::chrono::duration<double>(clock::now() - t0).count();
-                if (elapsed + 0.001 >= ptsSec) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
-            if (quit_flag && *quit_flag) { *quit_flag = 0; gotVideo = true; goto done; }
-
-            uint8_t* dstSlices[4] = { bgra.data(), nullptr, nullptr, nullptr };
-            int      dstStride[4] = { bgraPitch,  0,       0,       0       };
-            sws_scale(sws.get(),
-                      const_cast<const uint8_t* const*>(vframe->data),
-                      vframe->linesize,
-                      0, videoH,
-                      dstSlices, dstStride);
-
-            present.uploadBGRA(bgra.data(), bgraPitch);
-            if (!present.presentFrame()) { gotVideo = true; goto done; }
-            firstFramePresented = true;
-            gotVideo = true;
-            av_frame_unref(vframe.get());
         }
 
-        if (rr < 0 && !gotVideo) break;
+        // Convert YUV → BGRA and present.
+        uint8_t* dstSlices[4] = { bgra.data(), nullptr, nullptr, nullptr };
+        int      dstStride[4] = { bgraPitch,  0,       0,       0       };
+        sws_scale(sws.get(),
+                  const_cast<const uint8_t* const*>(vframe->data),
+                  vframe->linesize,
+                  0, videoH,
+                  dstSlices, dstStride);
+
+        present.uploadBGRA(bgra.data(), bgraPitch);
+        if (!present.presentFrame()) goto done;
+        firstFramePresented = true;
+        av_frame_unref(vframe.get());
     }
 
 done:
     if (audioReady)
     {
-        audio.markEof();
+        for (auto& ch : audioChannels) ch.sfml->markEof();
+
         const bool wasSkipped = (quit_flag && *quit_flag);
         if (!wasSkipped)
         {
-            // Drain briefly so the dialogue tail doesn't get clipped on a
-            // clean ending; skip path stops audio immediately.
+            // Brief drain so dialogue / music tails don't get clipped on
+            // a clean ending; skip path stops audio immediately.
             const auto drainStart = std::chrono::steady_clock::now();
-            while (audio.getStatus() == sf::SoundStream::Status::Playing &&
-                   std::chrono::steady_clock::now() - drainStart < std::chrono::milliseconds(300))
+            while (std::chrono::steady_clock::now() - drainStart < std::chrono::milliseconds(300))
             {
+                bool anyPlaying = false;
+                for (auto& ch : audioChannels)
+                    if (ch.sfml->getStatus() == sf::SoundStream::Status::Playing)
+                        anyPlaying = true;
+                if (!anyPlaying) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
-        audio.stop();
+        for (auto& ch : audioChannels) ch.sfml->stop();
     }
     present.shutdown();
     return firstFramePresented;
 }
 
-} // namespace Pop3MoviePlayer
+} // namespace Pop3MoviePlayer                                                                                                                                                                                                                                                                                                                                                                      
