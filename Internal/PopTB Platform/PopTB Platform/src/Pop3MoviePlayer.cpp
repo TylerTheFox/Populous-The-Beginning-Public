@@ -269,6 +269,38 @@ static inline bool pump_and_check_quit(const Pop3InputDispatchTable* idt,
     return quit_flag && *quit_flag != 0;
 }
 
+// 2026-07-02: EA multi-language containers. P3INTRO1/p3intro2 open with
+// FOUR back-to-back SCHl audio headers (English/German/French/Dutch full
+// mixes); their SCDl data chunks are strictly round-robin interleaved,
+// exactly 4 per video-frame time slice. libavformat's EA demuxer models
+// ONE audio stream and emits all four languages' chunks sequentially -
+// decoded blind that is ~4x time-stretched multi-language garble. Count
+// the leading SCHl chunks so playback can filter packets to one language.
+// (EA ADPCM packets are self-contained: each carries nb_samples and
+// predictor init in its own header, so dropping packets is decode-safe.)
+int count_leading_schl(const char* path)
+{
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return 0;
+    int count = 0;
+    long pos = 0;
+    unsigned char hdr[8];
+    while (count < 16 && std::fseek(f, pos, SEEK_SET) == 0
+           && std::fread(hdr, 1, 8, f) == 8
+           && hdr[0] == 'S' && hdr[1] == 'C' && hdr[2] == 'H' && hdr[3] == 'l')
+    {
+        const unsigned long sz = (unsigned long)hdr[4]
+                               | ((unsigned long)hdr[5] << 8)
+                               | ((unsigned long)hdr[6] << 16)
+                               | ((unsigned long)hdr[7] << 24);
+        if (sz < 8 || sz > 4096) break;   // implausible header chunk
+        ++count;
+        pos += (long)sz;
+    }
+    std::fclose(f);
+    return count;
+}
+
 } // namespace
 
 // =================================================================
@@ -319,15 +351,45 @@ bool play_blocking(const char*                   path,
     const int bgraPitch = videoW * 4;
 
     // ---- Audio channels ----
-    // TGQ files carry parallel audio streams — typically background
-    // music plus one or more voiceovers. The 1998 EA uV player picked
-    // ONE via uV_SelectAudioTrack (1-based), which is why call sites
-    // still pass `audio_track` (English=0=default, German=2, French=3,
-    // Dutch=4, etc.); on TGQs that bundle music + voiceover we have to
-    // play every audio stream concurrently or the voiceover goes
-    // missing. `audio_track` kept for future use; if a multi-language
-    // file produces layered voiceovers we can narrow this back down.
-    (void)audio_track;
+    // 2026-07-01: honour audio_track. Semantics follow the 1998
+    // uV_SelectAudioTrack call sites (fenewfn.cpp): 0 = default (first
+    // track), otherwise a 1-based track index (German=2, French=3,
+    // Dutch/Spanish=4 on the multi-language TGQs). Language tracks are
+    // full per-language mixes, so playing several at once layers every
+    // language's dialogue and doubles the music. Files exposing a single
+    // stream are unaffected; out-of-range selections clamp to track 1.
+    if (audioStreams.size() > 1)
+    {
+        std::size_t chosen = (audio_track <= 0)
+                                 ? 0u
+                                 : (std::size_t)(audio_track - 1);
+        if (chosen >= audioStreams.size())
+            chosen = 0u;
+        const int keep = audioStreams[chosen];
+        audioStreams.clear();
+        audioStreams.push_back(keep);
+    }
+
+    // 2026-07-02: EA multi-language sub-chunk selection. When the file
+    // opens with N > 1 back-to-back SCHl headers, libavformat exposes a
+    // single audio stream whose packets round-robin across the N language
+    // mixes (SCDl order == SCHl order: English, -, German, French, Dutch
+    // per fenewfn.cpp track numbers). Keep only the chosen language's
+    // packets. audio_track: 0 = default (first), otherwise 1-based.
+    int subStreams = 1;
+    int subChosen  = 0;
+    if (audioStreams.size() == 1)
+    {
+        const int n = count_leading_schl(path);
+        if (n > 1)
+        {
+            subStreams = n;
+            subChosen  = (audio_track <= 0) ? 0 : (audio_track - 1);
+            if (subChosen >= subStreams)
+                subChosen = 0;
+        }
+    }
+    int audioPktSeq = 0;
 
     struct AudioChannel
     {
@@ -343,42 +405,21 @@ bool play_blocking(const char*                   path,
     const float kVolume0_100 =
         (float)std::max(0, std::min(255, audio_volume_0_255)) * (100.0f / 255.0f);
 
+    // 2026-07-02: decoders open here; the resampler and the SFML stream
+    // are configured LAZILY from the FIRST DECODED FRAME's actual sample
+    // rate / channel layout (see drain_audio). The demuxer-reported
+    // codecpar for EA ADPCM streams is unreliable across FFmpeg versions
+    // (the bundled build is libavcodec 62): a stream reported mono but
+    // decoded stereo made the resampler consume at half rate - cutscene
+    // dialogue played ~2x slow and garbled. The decoded frame is ground
+    // truth for what the decoder actually emits.
     for (int ai : audioStreams)
     {
         AudioChannel ch;
         ch.streamIdx = ai;
         ch.ctx = open_decoder(fmt.get(), ai);
         if (!ch.ctx) continue;
-
-        ch.outChannels   = (ch.ctx->ch_layout.nb_channels >= 2) ? 2 : 1;
-        ch.outSampleRate = ch.ctx->sample_rate > 0 ? ch.ctx->sample_rate : 44100;
-
-        AVChannelLayout outLayout;
-        av_channel_layout_default(&outLayout, ch.outChannels);
-
-        SwrContext* rawSwr = nullptr;
-        bool ok = false;
-        if (swr_alloc_set_opts2(&rawSwr,
-                                &outLayout, AV_SAMPLE_FMT_S16, ch.outSampleRate,
-                                &ch.ctx->ch_layout, ch.ctx->sample_fmt, ch.ctx->sample_rate,
-                                0, nullptr) == 0 && rawSwr)
-        {
-            if (swr_init(rawSwr) >= 0)
-            {
-                ch.swr.reset(rawSwr);
-                ch.sfml = std::make_unique<FmvAudioStream>();
-                ch.sfml->start((unsigned)ch.outChannels, (unsigned)ch.outSampleRate);
-                ch.sfml->setVolume(kVolume0_100);
-                ok = true;
-            }
-            else
-            {
-                swr_free(&rawSwr);
-            }
-        }
-        av_channel_layout_uninit(&outLayout);
-        if (ok)
-            audioChannels.push_back(std::move(ch));
+        audioChannels.push_back(std::move(ch));
     }
 
     const bool audioReady = !audioChannels.empty();
@@ -387,6 +428,17 @@ bool play_blocking(const char*                   path,
     AvFramePtr  vframe(av_frame_alloc());
     AvFramePtr  aframe(av_frame_alloc());
     if (!pkt || !vframe || !aframe) return false;
+
+    // 2026-07-01: decoded-but-unpresented video frames. Needed because
+    // audio top-ups during the PTS wait read packets in file order - the
+    // video decoder's input queue fills, and the old code IGNORED
+    // avcodec_send_packet's EAGAIN, silently dropping those video
+    // packets. TQI is intra-coded, so every drop was a lost frame: the
+    // intro/logo played at a fraction of its 15 fps ("very slow choppy")
+    // and the starved feed produced the audio underrun chop. Bounded by
+    // kMaxVQueue via the audio top-up gate below.
+    std::deque<AvFramePtr>  vQueue;
+    constexpr std::size_t   kMaxVQueue = 8;
 
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
@@ -408,6 +460,21 @@ bool play_blocking(const char*                   path,
     //   to s16 stereo/mono, and pushes into the SFML queue. Cheap when
     //   the decoder is empty (single AVERROR(EAGAIN) check).
     // -----------------------------------------------------------------
+    // Pull every decoded frame currently available from the video
+    // decoder into vQueue (this also frees the decoder's input queue so
+    // packet sends cannot stay stuck on EAGAIN).
+    auto harvest_video = [&]()
+    {
+        for (;;)
+        {
+            AvFramePtr f(av_frame_alloc());
+            if (!f) break;
+            if (avcodec_receive_frame(vctx.get(), f.get()) < 0)
+                break;                      // EAGAIN / EOF - nothing ready
+            vQueue.push_back(std::move(f));
+        }
+    };
+
     auto read_and_dispatch = [&]() -> int
     {
         int rr = av_read_frame(fmt.get(), pkt.get());
@@ -416,11 +483,21 @@ bool play_blocking(const char*                   path,
             avcodec_send_packet(vctx.get(), nullptr);
             for (auto& ch : audioChannels)
                 avcodec_send_packet(ch.ctx.get(), nullptr);
+            harvest_video();                // collect what the flush frees
             return 0;
         }
         if (pkt->stream_index == videoIdx)
         {
-            avcodec_send_packet(vctx.get(), pkt.get());
+            // EAGAIN-safe send: drain decoded frames until the decoder
+            // accepts the packet. NEVER drop a video packet - TQI is
+            // intra-coded, every packet is a visible frame.
+            for (;;)
+            {
+                const int sr = avcodec_send_packet(vctx.get(), pkt.get());
+                if (sr != AVERROR(EAGAIN))
+                    break;
+                harvest_video();
+            }
         }
         else
         {
@@ -428,6 +505,13 @@ bool play_blocking(const char*                   path,
             {
                 if (pkt->stream_index == ch.streamIdx)
                 {
+                    // Multi-language TGQ: drop packets belonging to other
+                    // language sub-streams (strict round-robin interleave).
+                    if (subStreams > 1 && (audioPktSeq++ % subStreams) != subChosen)
+                        break;
+                    // Audio decoders are drained via drain_audio() right
+                    // after every dispatch, so their input queues cannot
+                    // fill the way video's did.
                     avcodec_send_packet(ch.ctx.get(), pkt.get());
                     break;
                 }
@@ -443,9 +527,57 @@ bool play_blocking(const char*                   path,
         {
             while (avcodec_receive_frame(ch.ctx.get(), aframe.get()) >= 0)
             {
+                if (!ch.swr)
+                {
+                    // First decoded frame: configure the pipeline from
+                    // what the decoder ACTUALLY produced.
+                    const int inRate = (aframe->sample_rate > 0)
+                                           ? aframe->sample_rate
+                                           : ((ch.ctx->sample_rate > 0) ? ch.ctx->sample_rate : 22050);
+                    const int inCh = (aframe->ch_layout.nb_channels > 0)
+                                         ? aframe->ch_layout.nb_channels : 1;
+                    ch.outChannels   = (inCh >= 2) ? 2 : 1;
+                    ch.outSampleRate = inRate;
+
+                    AVChannelLayout outLayout;
+                    av_channel_layout_default(&outLayout, ch.outChannels);
+
+                    SwrContext* rawSwr = nullptr;
+                    bool ok = false;
+                    if (swr_alloc_set_opts2(&rawSwr,
+                                            &outLayout, AV_SAMPLE_FMT_S16, ch.outSampleRate,
+                                            &aframe->ch_layout,
+                                            (AVSampleFormat)aframe->format, inRate,
+                                            0, nullptr) == 0 && rawSwr)
+                    {
+                        if (swr_init(rawSwr) >= 0)
+                        {
+                            ch.swr.reset(rawSwr);
+                            ch.sfml = std::make_unique<FmvAudioStream>();
+                            ch.sfml->start((unsigned)ch.outChannels, (unsigned)ch.outSampleRate);
+                            ch.sfml->setVolume(kVolume0_100);
+                            ok = true;
+                        }
+                        else
+                        {
+                            swr_free(&rawSwr);
+                        }
+                    }
+                    av_channel_layout_uninit(&outLayout);
+                    if (!ok)
+                    {
+                        av_frame_unref(aframe.get());
+                        continue;   // cannot configure - drop this frame
+                    }
+                }
+
+                // outSampleRate == configured input rate (from the first
+                // decoded frame), so use it on both sides - ctx->sample_rate
+                // is the untrusted demuxer value (can be 0 or wrong for EA
+                // ADPCM under newer FFmpeg).
                 const int maxOut = (int)av_rescale_rnd(
-                    swr_get_delay(ch.swr.get(), ch.ctx->sample_rate) + aframe->nb_samples,
-                    ch.outSampleRate, ch.ctx->sample_rate, AV_ROUND_UP);
+                    swr_get_delay(ch.swr.get(), ch.outSampleRate) + aframe->nb_samples,
+                    ch.outSampleRate, ch.outSampleRate, AV_ROUND_UP);
                 std::vector<std::int16_t> tmp((std::size_t)maxOut * ch.outChannels);
                 std::int16_t* outBufs[1] = { tmp.data() };
                 int outSamples = swr_convert(
@@ -468,6 +600,7 @@ bool play_blocking(const char*                   path,
     {
         for (auto& ch : audioChannels)
         {
+            if (!ch.sfml) return true;      // not configured yet - keep reading
             const std::size_t lw =
                 (std::size_t)ch.outSampleRate * (std::size_t)ch.outChannels / 4u;
             if (ch.sfml->queued() < lw) return true;
@@ -479,6 +612,7 @@ bool play_blocking(const char*                   path,
     {
         for (auto& ch : audioChannels)
         {
+            if (!ch.sfml) return true;      // not configured yet - keep reading
             const std::size_t pb =
                 (std::size_t)ch.outSampleRate * (std::size_t)ch.outChannels / 2u;
             if (ch.sfml->queued() < pb) return true;
@@ -509,19 +643,24 @@ bool play_blocking(const char*                   path,
         // demand. The decoder returns EAGAIN until it has enough input
         // buffered; we keep feeding packets (and draining audio as a side
         // effect) until either a frame pops out or the file hits EOF.
-        int rr;
-        while ((rr = avcodec_receive_frame(vctx.get(), vframe.get())) == AVERROR(EAGAIN))
+        if (vQueue.empty())
+            harvest_video();
+        while (vQueue.empty())
         {
             if (eofReached) break;
             int r = read_and_dispatch();
             if (r == 0) eofReached = true;
             drain_audio();
+            harvest_video();
             if (pump_and_check_quit(idt, quit_flag)) { if (quit_flag) *quit_flag = 0; goto done; }
         }
-        if (rr < 0) break;   // genuine EOF or decoder error — we are done
+        if (vQueue.empty()) break;   // EOF and decoder fully drained
 
-        int64_t pts = vframe->best_effort_timestamp;
-        if (pts == AV_NOPTS_VALUE) pts = vframe->pts;
+        AvFramePtr cur = std::move(vQueue.front());
+        vQueue.pop_front();
+
+        int64_t pts = cur->best_effort_timestamp;
+        if (pts == AV_NOPTS_VALUE) pts = cur->pts;
         double ptsSec = (pts == AV_NOPTS_VALUE)
                             ? 0.0
                             : (double)pts * (double)vtb.num / (double)vtb.den;
@@ -535,7 +674,8 @@ bool play_blocking(const char*                   path,
             const double elapsed = std::chrono::duration<double>(clock::now() - t0).count();
             if (elapsed + 0.001 >= ptsSec) break;
 
-            if (audioReady && !eofReached && any_channel_below_lowwater())
+            if (audioReady && !eofReached && vQueue.size() < kMaxVQueue &&
+                any_channel_below_lowwater())
             {
                 int r = read_and_dispatch();
                 if (r == 0) eofReached = true;
@@ -551,21 +691,21 @@ bool play_blocking(const char*                   path,
         uint8_t* dstSlices[4] = { bgra.data(), nullptr, nullptr, nullptr };
         int      dstStride[4] = { bgraPitch,  0,       0,       0       };
         sws_scale(sws.get(),
-                  const_cast<const uint8_t* const*>(vframe->data),
-                  vframe->linesize,
+                  const_cast<const uint8_t* const*>(cur->data),
+                  cur->linesize,
                   0, videoH,
                   dstSlices, dstStride);
 
         present.uploadBGRA(bgra.data(), bgraPitch);
         if (!present.presentFrame()) goto done;
         firstFramePresented = true;
-        av_frame_unref(vframe.get());
     }
 
 done:
     if (audioReady)
     {
-        for (auto& ch : audioChannels) ch.sfml->markEof();
+        for (auto& ch : audioChannels)
+            if (ch.sfml) ch.sfml->markEof();
 
         const bool wasSkipped = (quit_flag && *quit_flag);
         if (!wasSkipped)
@@ -577,13 +717,14 @@ done:
             {
                 bool anyPlaying = false;
                 for (auto& ch : audioChannels)
-                    if (ch.sfml->getStatus() == sf::SoundStream::Status::Playing)
+                    if (ch.sfml && ch.sfml->getStatus() == sf::SoundStream::Status::Playing)
                         anyPlaying = true;
                 if (!anyPlaying) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
-        for (auto& ch : audioChannels) ch.sfml->stop();
+        for (auto& ch : audioChannels)
+            if (ch.sfml) ch.sfml->stop();
     }
     present.shutdown();
     return firstFramePresented;
