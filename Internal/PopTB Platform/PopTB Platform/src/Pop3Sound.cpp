@@ -1,5 +1,9 @@
 #include "Pop3Sound.h"
 #include <SFML/Audio.hpp>
+#include <SFML/Audio/PlaybackDevice.hpp>
+
+#include <string>
+#include <vector>
 
 static sf::SoundBuffer* asBuffer(void* p) { return static_cast<sf::SoundBuffer*>(p); }
 static sf::Sound*       asSound(void* p)  { return static_cast<sf::Sound*>(p); }
@@ -256,4 +260,51 @@ void Pop3AudioListener::getDirection(float& x, float& y, float& z)
 	x = dir.x;
 	y = dir.y;
 	z = dir.z;
+}
+
+// ---------------------------------------------------------------------------
+// Pop3AudioDevice
+// ---------------------------------------------------------------------------
+
+// Cached device list - refreshed by getDeviceCount(). Kept as stable
+// storage so getDeviceName() pointers remain valid while the options
+// screen is open (the game copies what it persists).
+static std::vector<std::string> s_playbackDevices;
+static std::string              s_currentDeviceName;
+
+int Pop3AudioDevice::getDeviceCount()
+{
+	s_playbackDevices = sf::PlaybackDevice::getAvailableDevices();
+	return static_cast<int>(s_playbackDevices.size());
+}
+
+const char* Pop3AudioDevice::getDeviceName(int index)
+{
+	if (index < 0 || index >= static_cast<int>(s_playbackDevices.size()))
+		return "";
+	return s_playbackDevices[static_cast<size_t>(index)].c_str();
+}
+
+bool Pop3AudioDevice::setDevice(const char* name)
+{
+	if (!name || !name[0])
+		return setDeviceToDefault();
+	return sf::PlaybackDevice::setDevice(std::string(name));
+}
+
+bool Pop3AudioDevice::setDeviceToDefault()
+{
+	return sf::PlaybackDevice::setDeviceToDefault();
+}
+
+bool Pop3AudioDevice::isCurrentDeviceDefault()
+{
+	return sf::PlaybackDevice::isDefaultDevice();
+}
+
+const char* Pop3AudioDevice::getCurrentDeviceName()
+{
+	const auto dev = sf::PlaybackDevice::getDevice();
+	s_currentDeviceName = dev ? *dev : std::string();
+	return s_currentDeviceName.c_str();
 }

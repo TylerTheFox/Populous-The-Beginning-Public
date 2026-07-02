@@ -77,6 +77,25 @@ private:
 	void* impl;
 };
 
+// Audio output (playback) device control. Wraps sf::PlaybackDevice - the
+// device can be switched on the fly, playing sounds migrate seamlessly.
+// getDeviceCount() re-enumerates; name pointers stay valid until the next
+// getDeviceCount() call. Index -1 / empty name = system default device
+// (with automatic stream routing where the OS backend supports it).
+class Pop3AudioDevice
+{
+public:
+	static int         getDeviceCount();               // re-enumerates the device list
+	static const char* getDeviceName(int index);       // valid until next getDeviceCount()
+	static bool        setDevice(const char* name);    // by exact name from the list
+	static bool        setDeviceToDefault();
+	static bool        isCurrentDeviceDefault();
+	static const char* getCurrentDeviceName();         // empty string if none/unknown
+
+private:
+	Pop3AudioDevice() = delete;
+};
+
 class Pop3AudioListener
 {
 public:
