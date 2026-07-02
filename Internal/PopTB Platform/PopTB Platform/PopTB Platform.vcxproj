@@ -284,6 +284,7 @@
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;POCO_NO_UNWINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;SFML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ProgramDataBaseFileName>$(OutDir)$(TargetName).pdb</ProgramDataBaseFileName>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <ExceptionHandling>Async</ExceptionHandling>
       <CompileAs>CompileAsCpp</CompileAs>
       <CompileAsWinRT>false</CompileAsWinRT>
       <OmitFramePointers>true</OmitFramePointers>
