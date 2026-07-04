@@ -449,7 +449,7 @@ void Pop3Network::SendMyInfo(const char * peer_address, UWORD peer_port) const
     // Host
     buf[1] = FALSE;
     std::char_traits<UNICODE_CHAR>::copy(reinterpret_cast<UNICODE_CHAR *>(&buf[2]), my_name.c_str(), MAX_PLAYER_NAME_LEN);
-    Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, 2 + sizeof(UNICODE_CHAR) * (std::min(my_name.size(), static_cast<unsigned>(MAX_PLAYER_NAME_LEN))));
+    Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, 2 + sizeof(UNICODE_CHAR) * (std::min<size_t>(my_name.size(), MAX_PLAYER_NAME_LEN)));
 }
 
 void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char * buffer)

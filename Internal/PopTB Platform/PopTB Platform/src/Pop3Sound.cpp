@@ -294,12 +294,13 @@ bool Pop3AudioDevice::setDevice(const char* name)
 
 bool Pop3AudioDevice::setDeviceToDefault()
 {
-	return sf::PlaybackDevice::setDeviceToDefault();
+	auto def = sf::PlaybackDevice::getDefaultDevice();
+	return def.has_value() ? sf::PlaybackDevice::setDevice(*def) : false;
 }
 
 bool Pop3AudioDevice::isCurrentDeviceDefault()
 {
-	return sf::PlaybackDevice::isDefaultDevice();
+	return sf::PlaybackDevice::getDevice() == sf::PlaybackDevice::getDefaultDevice();
 }
 
 const char* Pop3AudioDevice::getCurrentDeviceName()

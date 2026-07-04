@@ -1,0 +1,2 @@
+External/x64/**/*.lib filter=lfs diff=lfs merge=lfs -text
+External/x64/**/*.dll filter=lfs diff=lfs merge=lfs -text

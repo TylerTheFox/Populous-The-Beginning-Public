@@ -87,9 +87,9 @@ typedef void* TbHandle;
 // cast them to/from the real Windows types internally.
 typedef void*               Pop3WindowHandle;   // HWND
 typedef void*               Pop3AppInstance;     // HINSTANCE
-typedef long                Pop3Result;          // LRESULT (LONG_PTR on x86)
-typedef unsigned int        Pop3WParam;          // WPARAM  (UINT_PTR on x86)
-typedef long                Pop3LParam;          // LPARAM  (LONG_PTR on x86)
+typedef intptr_t            Pop3Result;          // LRESULT (pointer-width)
+typedef uintptr_t           Pop3WParam;          // WPARAM  (pointer-width)
+typedef intptr_t            Pop3LParam;          // LPARAM  (pointer-width)
 
 // ---- Calling convention macros -------------------------------------------
 // Abstracts __stdcall / __cdecl so headers compile without <Windows.h>.

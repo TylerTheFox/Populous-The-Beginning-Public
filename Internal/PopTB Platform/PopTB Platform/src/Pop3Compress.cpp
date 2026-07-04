@@ -1,5 +1,5 @@
 #include "Pop3Compress.h"
-#include "../../../snappy/include/snappy-c.h"
+#include <snappy-c.h>
 
 size_t Pop3Compress::compress(const char* input, size_t input_length, char*& compressed, int extendBytes)
 {
