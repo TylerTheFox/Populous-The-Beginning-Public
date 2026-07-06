@@ -192,7 +192,8 @@ bool Pop3Screen::createDevice()
     pp.BackBufferCount = 1;
     pp.hDeviceWindow = (HWND)s_hWnd;
     pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
-    pp.EnableAutoDepthStencil = FALSE;
+    pp.EnableAutoDepthStencil = TRUE;
+    pp.AutoDepthStencilFormat = D3DFMT_D24S8;
 
     if (!s_windowed)
     {
@@ -496,7 +497,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
         const D3DCOLOR clearColour = s_debugBackbufferPink
                                      ? 0xFFFF00FFu  // bright magenta
                                      : 0xFF000000u; // black
-        s_pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, clearColour, 1.0f, 0);
+        s_pDevice->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, clearColour, 1.0f, 0);
 
         if (hwComposite)
         {
@@ -862,7 +863,8 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
     pp.BackBufferCount = 1;
     pp.hDeviceWindow = (HWND)s_hWnd;
     pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
-    pp.EnableAutoDepthStencil = FALSE;
+    pp.EnableAutoDepthStencil = TRUE;
+    pp.AutoDepthStencilFormat = D3DFMT_D24S8;
 
     HRESULT hr = s_pDevice->Reset(&pp);
     if (FAILED(hr))
@@ -915,6 +917,8 @@ bool Pop3Screen::handleDeviceLost()
         pp.BackBufferCount = 1;
         pp.hDeviceWindow = (HWND)s_hWnd;
         pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+        pp.EnableAutoDepthStencil = TRUE;
+        pp.AutoDepthStencilFormat = D3DFMT_D24S8;
 
         hr = s_pDevice->Reset(&pp);
         if (FAILED(hr))
