@@ -10,6 +10,7 @@
 struct IDirect3D9;
 struct IDirect3DDevice9;
 struct IDirect3DTexture9;
+struct IDirect3DPixelShader9;
 
 typedef void(__stdcall* Pop3ScreenCallback)(void);
 
@@ -131,6 +132,22 @@ public:
     static void setHwCompositeActive(bool on);
     static bool hwCompositeActive();
 
+    // ---------------------------------------------------------------
+    //  Present sync / frame-timing (perf introspection)
+    // ---------------------------------------------------------------
+
+    // Wire from DDrawConfig (ddraw.ini). vsync=false selects
+    // D3DPRESENT_INTERVAL_IMMEDIATE; maxFps>0 applies a CPU frame cap
+    // (only meaningful with vsync off). Call before create() to affect the
+    // presentation interval. Default keeps prior behavior (vsync on).
+    static void setPresentMode(bool vsync, int maxFps);
+
+    // LOCAL-ONLY frame-timing diagnostic (QueryPerformanceCounter). Values
+    // are the last-1s rolling average in ms; fps is 1000/frameTotal. Never
+    // feed these into the deterministic sim.
+    static void getFrameTimingMs(double& convertUpload, double& hwDraw,
+                                 double& present, double& frameTotal, double& fps);
+
 private:
     static IDirect3D9*          s_pD3D;
     static IDirect3DDevice9*    s_pDevice;
@@ -152,11 +169,28 @@ private:
     static bool                 s_ready;
     static bool                 s_hwComposite;    // Phase 7 composite-order flip
     static bool                 s_debugBackbufferPink; // Phase 8.5 #12c diag
+    static bool                 s_vsync;          // present interval (config)
+    static int                  s_maxFps;         // CPU frame cap, 0 = off
+    // GPU palette-lookup path (offloads the per-frame CPU convert).
+    static IDirect3DTexture9*      s_pIndexTex;    // L8 indices
+    static IDirect3DTexture9*      s_pPaletteTex;  // 256x1 RGBA LUT
+    static IDirect3DPixelShader9*  s_pPalettePS;   // palette-lookup shader
+    static int                  s_indexTexW;
+    static int                  s_indexTexH;
+    static bool                 s_gpuPalette;     // GPU path enabled (auto-off on failure)
+    static bool                 s_gpuActiveFrame; // GPU path used this frame
 
     static bool createDevice();
     static void releaseDevice();
     static bool createFramebufferTexture(int width, int height);
     static void drawFramebufferQuad(bool alphaBlend = false);
+    // GPU palette-lookup path helpers.
+    static bool createPaletteShader();
+    static bool ensurePaletteTexture();
+    static bool createIndexTexture(int width, int height);
+    static void uploadIndices(const unsigned char* pixels, int pitch, int width, int height);
+    static void uploadPalette(const unsigned char* palette, bool composite);
+    static void releaseGpuPaletteResources();
     // Detect a window resize and Reset() the device so the backbuffer tracks
     // the window client rect. Returns true if the device was just reset and
     // the caller should skip this frame (mirrors handleDeviceLost).

@@ -8,8 +8,11 @@
 #include "Pop3Debug.h"
 #include <d3d9.h>
 #include <windows.h>
+#include <d3dx9.h>
+#include <cstring>
 
 #pragma comment(lib, "d3d9.lib")
+#pragma comment(lib, "d3dx9.lib")
 
 // ---------------------------------------------------------------
 //  Static member definitions
@@ -34,6 +37,63 @@ bool                Pop3Screen::s_border              = true;
 bool                Pop3Screen::s_ready               = false;
 bool                Pop3Screen::s_hwComposite         = false;
 bool                Pop3Screen::s_debugBackbufferPink = false;
+
+bool                Pop3Screen::s_vsync               = true;   // default: vsync on (unchanged)
+int                 Pop3Screen::s_maxFps              = 0;
+IDirect3DTexture9*      Pop3Screen::s_pIndexTex       = nullptr;
+IDirect3DTexture9*      Pop3Screen::s_pPaletteTex     = nullptr;
+IDirect3DPixelShader9*  Pop3Screen::s_pPalettePS      = nullptr;
+int                 Pop3Screen::s_indexTexW           = 0;
+int                 Pop3Screen::s_indexTexH           = 0;
+bool                Pop3Screen::s_gpuPalette          = true;
+bool                Pop3Screen::s_gpuActiveFrame      = false;
+
+// ---------------------------------------------------------------
+//  Frame-timing introspection (LOCAL-ONLY; QueryPerformanceCounter).
+//  Never read from deterministic sim/lockstep code - us values differ
+//  per machine. Reported once/sec via Pop3Debug::trace and exposed via
+//  getFrameTimingMs() for an optional on-screen overlay.
+// ---------------------------------------------------------------
+namespace {
+    inline long long _pp_qpc()
+    {
+        LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart;
+    }
+    inline long long _pp_freq()
+    {
+        static long long f = []{ LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x.QuadPart; }();
+        return f;
+    }
+    inline double _pp_ms(long long a, long long b)
+    {
+        return (double)(b - a) * 1000.0 / (double)_pp_freq();
+    }
+
+    long long _pp_prevPresent  = 0;   // present-to-present anchor
+    long long _pp_lastCapTicks = 0;   // maxfps limiter anchor
+    long long _pp_winStart     = 0;   // 1s report window anchor
+
+    double _pp_accConvert = 0.0, _pp_accDraw = 0.0, _pp_accPresent = 0.0, _pp_accFrame = 0.0;
+    int    _pp_accCount = 0;
+
+    double _pp_avgConvert = 0.0, _pp_avgDraw = 0.0, _pp_avgPresent = 0.0, _pp_avgFrame = 0.0, _pp_avgFps = 0.0;
+}
+
+void Pop3Screen::setPresentMode(bool vsync, int maxFps)
+{
+    s_vsync  = vsync;
+    s_maxFps = (maxFps > 0) ? maxFps : 0;
+}
+
+void Pop3Screen::getFrameTimingMs(double& convertUpload, double& hwDraw,
+                                  double& present, double& frameTotal, double& fps)
+{
+    convertUpload = _pp_avgConvert;
+    hwDraw        = _pp_avgDraw;
+    present       = _pp_avgPresent;
+    frameTotal    = _pp_avgFrame;
+    fps           = _pp_avgFps;
+}
 
 void Pop3Screen::setHwCompositeActive(bool on) { s_hwComposite = on; }
 bool Pop3Screen::hwCompositeActive()           { return s_hwComposite; }
@@ -131,7 +191,7 @@ bool Pop3Screen::createDevice()
     pp.BackBufferHeight = s_backbufferHeight;
     pp.BackBufferCount = 1;
     pp.hDeviceWindow = (HWND)s_hWnd;
-    pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+    pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
     pp.EnableAutoDepthStencil = FALSE;
 
     if (!s_windowed)
@@ -163,6 +223,8 @@ void Pop3Screen::releaseDevice()
         s_pFramebufferTex->Release();
         s_pFramebufferTex = nullptr;
     }
+
+    releaseGpuPaletteResources();
 
     if (s_pDevice)
     {
@@ -203,6 +265,109 @@ bool Pop3Screen::createFramebufferTexture(int width, int height)
 }
 
 // ---------------------------------------------------------------
+//  GPU palette-lookup path (offloads the per-frame CPU convert)
+//
+//  Instead of converting the whole 8bpp framebuffer to 32bpp on the CPU
+//  every frame, upload the raw indices to an L8 texture and let a ps_2_0
+//  shader do the palette lookup on the GPU. The 256-entry palette lives
+//  in a 256x1 LUT (rebuilt each frame - it cycles for water); the
+//  index-0 -> alpha-0 composite key is baked into the LUT alpha. Falls
+//  back to the CPU convert if any resource cannot be created.
+// ---------------------------------------------------------------
+bool Pop3Screen::createPaletteShader()
+{
+    if (s_pPalettePS) return true;
+    if (!s_pDevice)   return false;
+
+    static const char* kSrc =
+        "sampler2D idxTex : register(s0);\n"
+        "sampler2D palTex : register(s1);\n"
+        "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+        "  float idx = tex2D(idxTex, uv).r;\n"
+        "  float u = idx * (255.0/256.0) + (0.5/256.0);\n"
+        "  return tex2D(palTex, float2(u, 0.5));\n"
+        "}\n";
+
+    LPD3DXBUFFER code = nullptr, err = nullptr;
+    HRESULT hr = D3DXCompileShader(kSrc, (UINT)strlen(kSrc), nullptr, nullptr,
+                                   "main", "ps_2_0", 0, &code, &err, nullptr);
+    if (FAILED(hr) || !code)
+    {
+        if (err) { Pop3Debug::trace("[gpupal] ps compile failed: %s\n", (const char*)err->GetBufferPointer()); err->Release(); }
+        if (code) code->Release();
+        return false;
+    }
+    hr = s_pDevice->CreatePixelShader(reinterpret_cast<const DWORD*>(code->GetBufferPointer()), &s_pPalettePS);
+    code->Release();
+    if (err) err->Release();
+    return SUCCEEDED(hr) && s_pPalettePS != nullptr;
+}
+
+bool Pop3Screen::ensurePaletteTexture()
+{
+    if (s_pPaletteTex) return true;
+    if (!s_pDevice)    return false;
+    HRESULT hr = s_pDevice->CreateTexture(256, 1, 1, 0, D3DFMT_A8R8G8B8,
+                                          D3DPOOL_MANAGED, &s_pPaletteTex, nullptr);
+    return SUCCEEDED(hr) && s_pPaletteTex != nullptr;
+}
+
+bool Pop3Screen::createIndexTexture(int width, int height)
+{
+    if (s_pIndexTex)
+    {
+        if (s_indexTexW == width && s_indexTexH == height) return true;
+        s_pIndexTex->Release();
+        s_pIndexTex = nullptr;
+    }
+    HRESULT hr = s_pDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC,
+                                          D3DFMT_L8, D3DPOOL_DEFAULT, &s_pIndexTex, nullptr);
+    if (FAILED(hr)) { s_pIndexTex = nullptr; return false; }
+    s_indexTexW = width; s_indexTexH = height;
+    return true;
+}
+
+void Pop3Screen::uploadIndices(const unsigned char* pixels, int pitch, int width, int height)
+{
+    if (!s_pIndexTex) return;
+    D3DLOCKED_RECT lr;
+    if (SUCCEEDED(s_pIndexTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
+    {
+        unsigned char* dst = static_cast<unsigned char*>(lr.pBits);
+        for (int y = 0; y < height; y++)
+            memcpy(dst + y * lr.Pitch, pixels + y * pitch, width);
+        s_pIndexTex->UnlockRect(0);
+    }
+}
+
+void Pop3Screen::uploadPalette(const unsigned char* palette, bool composite)
+{
+    if (!s_pPaletteTex) return;
+    D3DLOCKED_RECT lr;
+    if (SUCCEEDED(s_pPaletteTex->LockRect(0, &lr, nullptr, 0)))
+    {
+        unsigned int* dst = static_cast<unsigned int*>(lr.pBits);
+        for (int i = 0; i < 256; i++)
+        {
+            const unsigned char r = palette[i * 4 + 0];
+            const unsigned char g = palette[i * 4 + 1];
+            const unsigned char b = palette[i * 4 + 2];
+            const unsigned int a = (composite && i == 0) ? 0x00u : 0xFFu;
+            dst[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        s_pPaletteTex->UnlockRect(0);
+    }
+}
+
+void Pop3Screen::releaseGpuPaletteResources()
+{
+    if (s_pIndexTex)   { s_pIndexTex->Release();   s_pIndexTex = nullptr; }
+    if (s_pPaletteTex) { s_pPaletteTex->Release(); s_pPaletteTex = nullptr; }
+    if (s_pPalettePS)  { s_pPalettePS->Release();  s_pPalettePS = nullptr; }
+    s_indexTexW = s_indexTexH = 0;
+}
+
+// ---------------------------------------------------------------
 //  Framebuffer presentation
 // ---------------------------------------------------------------
 
@@ -210,6 +375,11 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
                          int width, int height,
                          const unsigned char* palette)
 {
+    // --- frame-timing: present-to-present period (LOCAL-ONLY diag) ---
+    const long long _pp_fpNow = _pp_qpc();
+    const double _pp_framePeriodMs = _pp_prevPresent ? _pp_ms(_pp_prevPresent, _pp_fpNow) : 0.0;
+    _pp_prevPresent = _pp_fpNow;
+
     if (!s_pDevice || !pixels || !palette)
         return;
 
@@ -226,9 +396,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     if (matchWindowSizeToBackbuffer())
         return; // Skip this frame, device was just reset
 
-    // Ensure we have a texture of the right size
-    if (!createFramebufferTexture(width, height))
-        return;
+    // The framebuffer/index texture is created lazily below, per render path.
 
     // Phase 7 option A: when HW rendering is active, we flip the frame
     // composite order so HW world geometry (terrain/sprites/etc.) draws
@@ -260,29 +428,63 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     // Upload 8bpp indexed pixels → 32bpp ARGB texture. In HW-composite
     // mode, palette index 0 becomes alpha=0 (transparent); everywhere
     // else stays alpha=255. In SW-only mode, always alpha=255.
-    D3DLOCKED_RECT lr;
-    if (SUCCEEDED(s_pFramebufferTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
+    const long long _pp_tConv0 = _pp_qpc();   // start of convert+upload
+
+    // GPU palette path: upload raw 8bpp indices + a 256-entry LUT and let a
+    // pixel shader do the lookup, instead of converting every pixel on the
+    // CPU. Falls back to the CPU convert if the shader/textures fail.
+    bool gpuOk = false;
+    if (s_gpuPalette)
     {
-        for (int y = 0; y < height; y++)
+        if (createPaletteShader() && ensurePaletteTexture() && createIndexTexture(width, height))
         {
-            const unsigned char* srcRow = pixels + y * pitch;
-            unsigned int* dstRow = reinterpret_cast<unsigned int*>(
-                static_cast<unsigned char*>(lr.pBits) + y * lr.Pitch);
-
-            for (int x = 0; x < width; x++)
-            {
-                const unsigned char idx = srcRow[x];
-                const unsigned int alpha =
-                    (hwComposite && idx == kAlphaKeyIndex) ? 0x00u : 0xFFu;
-                const unsigned char r = palette[idx * 4 + 0];
-                const unsigned char g = palette[idx * 4 + 1];
-                const unsigned char b = palette[idx * 4 + 2];
-                dstRow[x] = (alpha << 24) | (r << 16) | (g << 8) | b;
-            }
+            // Keep the SW-dim source (getFramebufferWidth/Height) current -
+            // the HW renderer scales its geometry by it. createFramebufferTexture
+            // (which normally sets these) is skipped on the GPU path.
+            s_framebufferWidth  = width;
+            s_framebufferHeight = height;
+            uploadIndices(pixels, pitch, width, height);
+            uploadPalette(palette, hwComposite);
+            gpuOk = true;
         }
-
-        s_pFramebufferTex->UnlockRect(0);
+        else
+        {
+            s_gpuPalette = false;   // stop retrying every frame
+            Pop3Debug::trace("[gpupal] GPU palette path unavailable; using CPU convert\n");
+        }
     }
+    s_gpuActiveFrame = gpuOk;
+
+    if (!gpuOk)
+    {
+        if (!createFramebufferTexture(width, height))
+            return;
+        D3DLOCKED_RECT lr;
+        if (SUCCEEDED(s_pFramebufferTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
+        {
+            for (int y = 0; y < height; y++)
+            {
+                const unsigned char* srcRow = pixels + y * pitch;
+                unsigned int* dstRow = reinterpret_cast<unsigned int*>(
+                    static_cast<unsigned char*>(lr.pBits) + y * lr.Pitch);
+
+                for (int x = 0; x < width; x++)
+                {
+                    const unsigned char idx = srcRow[x];
+                    const unsigned int alpha =
+                        (hwComposite && idx == kAlphaKeyIndex) ? 0x00u : 0xFFu;
+                    const unsigned char r = palette[idx * 4 + 0];
+                    const unsigned char g = palette[idx * 4 + 1];
+                    const unsigned char b = palette[idx * 4 + 2];
+                    dstRow[x] = (alpha << 24) | (r << 16) | (g << 8) | b;
+                }
+            }
+
+            s_pFramebufferTex->UnlockRect(0);
+        }
+    }
+
+    const long long _pp_tConv1 = _pp_qpc();   // convert+upload done
 
     if (SUCCEEDED(s_pDevice->BeginScene()))
     {
@@ -324,12 +526,48 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
         s_pDevice->EndScene();
     }
 
+    const long long _pp_tDraw1 = _pp_qpc();   // HW draw done
+
+    // Optional CPU frame cap (only meaningful with vsync off).
+    if (!s_vsync && s_maxFps > 0)
+    {
+        const double _pp_targetMs = 1000.0 / (double)s_maxFps;
+        while (_pp_lastCapTicks && _pp_ms(_pp_lastCapTicks, _pp_qpc()) < _pp_targetMs)
+        {
+            if (_pp_targetMs - _pp_ms(_pp_lastCapTicks, _pp_qpc()) > 2.0) Sleep(1);
+        }
+        _pp_lastCapTicks = _pp_qpc();
+    }
+
     s_pDevice->Present(nullptr, nullptr, nullptr, nullptr);
+    const long long _pp_tPres1 = _pp_qpc();   // Present() returned
+
+    // --- accumulate rolling 1s frame-timing (LOCAL-ONLY diagnostic) ---
+    _pp_accConvert += _pp_ms(_pp_tConv0, _pp_tConv1);
+    _pp_accDraw    += _pp_ms(_pp_tConv1, _pp_tDraw1);
+    _pp_accPresent += _pp_ms(_pp_tDraw1, _pp_tPres1);
+    _pp_accFrame   += _pp_framePeriodMs;
+    _pp_accCount++;
+    if (_pp_winStart == 0) _pp_winStart = _pp_fpNow;
+    if (_pp_ms(_pp_winStart, _pp_tPres1) >= 1000.0 && _pp_accCount > 0)
+    {
+        _pp_avgConvert = _pp_accConvert / _pp_accCount;
+        _pp_avgDraw    = _pp_accDraw    / _pp_accCount;
+        _pp_avgPresent = _pp_accPresent / _pp_accCount;
+        _pp_avgFrame   = _pp_accFrame   / _pp_accCount;
+        _pp_avgFps     = _pp_avgFrame > 0.0 ? 1000.0 / _pp_avgFrame : 0.0;
+        Pop3Debug::trace("[frametime] fps=%.1f frame=%.2fms | convert+upload=%.2f draw=%.2f present=%.2f  (n=%d vsync=%d maxfps=%d)\n",
+                         _pp_avgFps, _pp_avgFrame, _pp_avgConvert, _pp_avgDraw, _pp_avgPresent,
+                         _pp_accCount, s_vsync ? 1 : 0, s_maxFps);
+        _pp_accConvert = _pp_accDraw = _pp_accPresent = _pp_accFrame = 0.0;
+        _pp_accCount = 0;
+        _pp_winStart = _pp_tPres1;
+    }
 }
 
 void Pop3Screen::drawFramebufferQuad(bool alphaBlend)
 {
-    if (!s_pFramebufferTex || !s_pDevice)
+    if (!s_pDevice)
         return;
 
     float w = static_cast<float>(s_backbufferWidth);
@@ -347,6 +585,46 @@ void Pop3Screen::drawFramebufferQuad(bool alphaBlend)
     // Set minimal render state for the framebuffer quad
     s_pDevice->SetTexture(0, s_pFramebufferTex);
     s_pDevice->SetFVF(SCREEN_FVF);
+
+    // GPU palette path: index texture on s0, palette LUT on s1; the pixel
+    // shader does the lookup. Self-contained (own blend/draw/cleanup, then
+    // return) so the fixed-function fallback below is unchanged.
+    if (s_gpuActiveFrame && s_pPalettePS && s_pIndexTex && s_pPaletteTex)
+    {
+        s_pDevice->SetPixelShader(s_pPalettePS);
+        s_pDevice->SetTexture(0, s_pIndexTex);
+        s_pDevice->SetTexture(1, s_pPaletteTex);
+        for (DWORD st = 0; st < 2; ++st)
+        {
+            s_pDevice->SetSamplerState(st, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+            s_pDevice->SetSamplerState(st, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+            s_pDevice->SetSamplerState(st, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+            s_pDevice->SetSamplerState(st, D3DSAMP_ADDRESSU,  D3DTADDRESS_CLAMP);
+            s_pDevice->SetSamplerState(st, D3DSAMP_ADDRESSV,  D3DTADDRESS_CLAMP);
+        }
+
+        if (alphaBlend)
+        {
+            s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            s_pDevice->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+            s_pDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        }
+        else
+        {
+            s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        }
+        s_pDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
+        s_pDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
+        s_pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+
+        s_pDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(ScreenVertex));
+
+        s_pDevice->SetPixelShader(nullptr);
+        s_pDevice->SetTexture(1, nullptr);
+        s_pDevice->SetTexture(0, nullptr);
+        s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        return;
+    }
 
     // Reset texture stage ops — HwDisplayList::applyState may have left
     // COLOROP=SELECTARG2 (from HWRMODE_TINT) which would ignore the
@@ -568,6 +846,7 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
     {
         s_pFramebufferTex->Release();
         s_pFramebufferTex = nullptr;
+        if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
         // Force a re-create at the next present() so dims are re-taken.
         s_framebufferWidth = 0;
         s_framebufferHeight = 0;
@@ -582,7 +861,7 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
     pp.BackBufferHeight = newH;
     pp.BackBufferCount = 1;
     pp.hDeviceWindow = (HWND)s_hWnd;
-    pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+    pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
     pp.EnableAutoDepthStencil = FALSE;
 
     HRESULT hr = s_pDevice->Reset(&pp);
@@ -624,6 +903,7 @@ bool Pop3Screen::handleDeviceLost()
             s_pFramebufferTex->Release();
             s_pFramebufferTex = nullptr;
         }
+        if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
 
         D3DPRESENT_PARAMETERS pp;
         ZeroMemory(&pp, sizeof(pp));
@@ -634,7 +914,7 @@ bool Pop3Screen::handleDeviceLost()
         pp.BackBufferHeight = s_backbufferHeight;
         pp.BackBufferCount = 1;
         pp.hDeviceWindow = (HWND)s_hWnd;
-        pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+        pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
 
         hr = s_pDevice->Reset(&pp);
         if (FAILED(hr))
