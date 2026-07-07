@@ -471,8 +471,13 @@ void Pop3Network::SendMyInfo(const char * peer_address, UWORD peer_port) const
     buf[0] = *GamePtrs.RequestedPlayerNum;
     // Host
     buf[1] = FALSE;
-    std::char_traits<UNICODE_CHAR>::copy(reinterpret_cast<UNICODE_CHAR *>(&buf[2]), my_name.c_str(), MAX_PLAYER_NAME_LEN);
-    Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, 2 + sizeof(UNICODE_CHAR) * (std::min<size_t>(my_name.size(), MAX_PLAYER_NAME_LEN)));
+    // Copy only the real name (copying MAX_PLAYER_NAME_LEN reads past the end
+    // of my_name's buffer) and send the null terminator with it: the host
+    // stores the name verbatim and echoes it back in HOST_PLAYERS, and we
+    // recognize ourselves by exact name match.
+    const size_t name_len = std::min<size_t>(my_name.size(), MAX_PLAYER_NAME_LEN - 1);
+    std::char_traits<UNICODE_CHAR>::copy(reinterpret_cast<UNICODE_CHAR *>(&buf[2]), my_name.c_str(), name_len);
+    Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, static_cast<DWORD>(2 + sizeof(UNICODE_CHAR) * (name_len + 1)));
 }
 
 void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char * buffer, DWORD payload_size)

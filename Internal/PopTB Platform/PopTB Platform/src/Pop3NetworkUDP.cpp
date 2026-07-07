@@ -93,6 +93,10 @@ void Pop3NetworkUDP::RunServer()
             try
             {
                 Poco::Net::SocketAddress sender;
+                // Zero between receives: packet parsers (CLIENT_JOIN name,
+                // HOST_PLAYERS records) read fixed widths past short payloads
+                // and rely on the buffer being null beyond the datagram.
+                memset(buf, 0, sizeof(buf));
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
                 if (((*GamePtrs.GnsiFlags & GNS_QUITTING) && Pop3App::isQuitting()) || m_shutdown.load())
                     return;
