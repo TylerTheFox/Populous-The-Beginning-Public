@@ -189,7 +189,8 @@ bool Pop3Screen::createDevice()
     pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     pp.BackBufferWidth = s_backbufferWidth;
     pp.BackBufferHeight = s_backbufferHeight;
-    pp.BackBufferCount = 1;
+    pp.BackBufferCount = 2; // P4-07: one queued frame so Present() does not stall the
+                            // CPU-bound frame loop; worst case +<=1 vblank latency, only when the queue is full
     pp.hDeviceWindow = (HWND)s_hWnd;
     pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
     pp.EnableAutoDepthStencil = TRUE;
@@ -200,13 +201,56 @@ bool Pop3Screen::createDevice()
         pp.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
     }
 
+    // P4-08: hardware vertex processing when the driver can do it - under
+    // SWVP every draw pays runtime-side CPU vertex work and the HwGpuLand
+    // vs_2_0 shader executes on the CPU, negating its offload design. Main
+    // geometry is XYZRHW (bypasses vertex processing) and nothing uses
+    // ProcessVertices/D3DUSAGE_SOFTWAREPROCESSING, so HWVP is safe. NEVER
+    // add D3DCREATE_MULTITHREADED (hard project invariant) and never
+    // PUREDEVICE (imgui backend calls GetTransform). On failure fall back
+    // MIXED then SOFTWARE, rebuilding pp each retry (CreateDevice may
+    // scribble on it).
+    const D3DPRESENT_PARAMETERS pp_pristine = pp;
+    DWORD behaviour = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+    {
+        D3DCAPS9 caps;
+        if (SUCCEEDED(s_pD3D->GetDeviceCaps(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, &caps)) &&
+            (caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT))
+        {
+            behaviour = (caps.VertexShaderVersion >= D3DVS_VERSION(2, 0))
+                ? D3DCREATE_HARDWARE_VERTEXPROCESSING
+                : D3DCREATE_MIXED_VERTEXPROCESSING;
+        }
+    }
+
     HRESULT hr = s_pD3D->CreateDevice(
         D3DADAPTER_DEFAULT,
         D3DDEVTYPE_HAL,
         (HWND)s_hWnd,
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+        behaviour,
         &pp,
         &s_pDevice);
+
+    if (FAILED(hr) && behaviour == D3DCREATE_HARDWARE_VERTEXPROCESSING)
+    {
+        pp = pp_pristine;
+        behaviour = D3DCREATE_MIXED_VERTEXPROCESSING;
+        hr = s_pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+            (HWND)s_hWnd, behaviour, &pp, &s_pDevice);
+    }
+    if (FAILED(hr) && behaviour != D3DCREATE_SOFTWARE_VERTEXPROCESSING)
+    {
+        pp = pp_pristine;
+        behaviour = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+        hr = s_pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+            (HWND)s_hWnd, behaviour, &pp, &s_pDevice);
+    }
+    if (SUCCEEDED(hr))
+    {
+        Pop3Debug::trace("Pop3Screen: vertex processing mode = %s",
+            behaviour == D3DCREATE_HARDWARE_VERTEXPROCESSING ? "hardware" :
+            behaviour == D3DCREATE_MIXED_VERTEXPROCESSING ? "mixed" : "software");
+    }
 
     if (FAILED(hr))
     {
@@ -249,6 +293,20 @@ bool Pop3Screen::createFramebufferTexture(int width, int height)
     // geometry in the world area. X8R8G8B8 would throw away the alpha
     // bits we wrote into the texture, leaving a fully-opaque quad that
     // hides HW behind it.
+    // 4K audit F1: refuse (loudly) framebuffer textures beyond the
+    // device's texture caps - some drivers cap at 4096/8192 and a silent
+    // CreateTexture failure previously produced a black screen with no log.
+    {
+        D3DCAPS9 caps;
+        if (SUCCEEDED(s_pDevice->GetDeviceCaps(&caps)) &&
+            ((DWORD)width > caps.MaxTextureWidth || (DWORD)height > caps.MaxTextureHeight))
+        {
+            Pop3Debug::trace("Pop3Screen: framebuffer %dx%d exceeds device texture caps %lux%lu",
+                width, height, caps.MaxTextureWidth, caps.MaxTextureHeight);
+            return false;
+        }
+    }
+
     HRESULT hr = s_pDevice->CreateTexture(
         width, height, 1,
         D3DUSAGE_DYNAMIC,
@@ -321,9 +379,25 @@ bool Pop3Screen::createIndexTexture(int width, int height)
         s_pIndexTex->Release();
         s_pIndexTex = nullptr;
     }
+    // 4K audit F1: caps guard + loud failure (see createFramebufferTexture)
+    {
+        D3DCAPS9 caps;
+        if (SUCCEEDED(s_pDevice->GetDeviceCaps(&caps)) &&
+            ((DWORD)width > caps.MaxTextureWidth || (DWORD)height > caps.MaxTextureHeight))
+        {
+            Pop3Debug::trace("Pop3Screen: index texture %dx%d exceeds device texture caps %lux%lu",
+                width, height, caps.MaxTextureWidth, caps.MaxTextureHeight);
+            return false;
+        }
+    }
     HRESULT hr = s_pDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC,
                                           D3DFMT_L8, D3DPOOL_DEFAULT, &s_pIndexTex, nullptr);
-    if (FAILED(hr)) { s_pIndexTex = nullptr; return false; }
+    if (FAILED(hr))
+    {
+        s_pIndexTex = nullptr;
+        Pop3Debug::trace("Pop3Screen: index texture CreateTexture(%dx%d) failed", width, height);
+        return false;
+    }
     s_indexTexW = width; s_indexTexH = height;
     return true;
 }
@@ -860,7 +934,8 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
     pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     pp.BackBufferWidth = newW;
     pp.BackBufferHeight = newH;
-    pp.BackBufferCount = 1;
+    pp.BackBufferCount = 2; // P4-07: one queued frame so Present() does not stall the
+                            // CPU-bound frame loop; worst case +<=1 vblank latency, only when the queue is full
     pp.hDeviceWindow = (HWND)s_hWnd;
     pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
     pp.EnableAutoDepthStencil = TRUE;
@@ -914,7 +989,8 @@ bool Pop3Screen::handleDeviceLost()
         pp.BackBufferFormat = D3DFMT_X8R8G8B8;
         pp.BackBufferWidth = s_backbufferWidth;
         pp.BackBufferHeight = s_backbufferHeight;
-        pp.BackBufferCount = 1;
+        pp.BackBufferCount = 2; // P4-07: one queued frame so Present() does not stall the
+                            // CPU-bound frame loop; worst case +<=1 vblank latency, only when the queue is full
         pp.hDeviceWindow = (HWND)s_hWnd;
         pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
         pp.EnableAutoDepthStencil = TRUE;

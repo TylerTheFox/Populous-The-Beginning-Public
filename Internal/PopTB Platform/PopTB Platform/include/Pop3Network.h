@@ -9,6 +9,8 @@
 #include <Poco/Condition.h>
 #include <Poco/Mutex.h>
 #include <vector>
+#include <atomic>
+#include <thread>
 
 extern Poco::Mutex packet_info_mu;
 
@@ -297,13 +299,29 @@ protected:
     mutable Poco::Mutex                             players_mu;
     mutable std::list<class PacketInfo>             packets;
 
+    // Watchdog/receive-loop shutdown flag: set by shutdown_watchdogs(); also
+    // meant to be polled by the derived Pop3NetworkUDP receive loop.
+    std::atomic<bool>                               m_shutdown{ false };
+    std::thread                                     m_host_watchdog;
+    std::thread                                     m_join_watchdog;
+    bool                                            m_join_first_time = true;
+
     void                                            ParsePacket(char* buffer, DWORD buf_size, const char* peer_address, UWORD peer_port);
     SWORD                                           add_player(const char* peer_address, UWORD peer_port, SWORD player_number, bool is_host, UNICODE_CHAR* player_name);
     void                                            SendPointers(const char* peer_address, UWORD peer_port);
     void                                            send_join_request() const;
     void                                            add_packet_info(const PacketInfo & pi) const;
+    // Signals the watchdog threads (and receive loop) to exit, then joins the
+    // watchdogs. MUST be called from the most-derived destructor
+    // (Pop3NetworkUDP::~Pop3NetworkUDP) while the virtual Send() is still
+    // valid; ~Pop3Network() only calls it as a last-resort fallback.
+    void                                            shutdown_watchdogs();
 private:
     FileTransfer FT;
+    // Guards ALL FT access (main-thread transfer_file/getters vs the network
+    // thread's filetransfer_* handlers and filetransfer_tick). Lock order:
+    // ft_mu is taken BEFORE players_mu (via Send); never the reverse.
+    mutable Poco::Mutex ft_mu;
 
     // Utility Functions
     void                                            send_remove_player(SWORD player_id);
@@ -315,7 +333,7 @@ private:
     void                                            send_players(int to_id);
     void                                            send_add_player(SWORD player_id);
     void                                            SendMyInfo(const char* peer_address, UWORD peer_port) const;
-    void                                            add_players(const char* peer_address, UWORD peer_port, char* buffer);
+    void                                            add_players(const char* peer_address, UWORD peer_port, char* buffer, DWORD payload_size);
     void                                            Send(int to_id, Pop3NetworkTypes type);
     void                                            Send(int to_id, Pop3NetworkTypes type, const char* buffer, DWORD buf_size);
     void                                            Send(const char* peer_address, UWORD peer_port, Pop3NetworkTypes type) const;

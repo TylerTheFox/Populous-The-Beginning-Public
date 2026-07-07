@@ -162,9 +162,16 @@ std::string Pop3Debug::getLogPath()
     return _log;
 }
 
-std::vector<std::string>& Pop3Debug::getOutputVect()
+std::vector<std::string> Pop3Debug::getOutputSnapshot()
 {
+    Poco::Mutex::ScopedLock lk(_mu);
     return _debugLog;
+}
+
+void Pop3Debug::clearOutput()
+{
+    Poco::Mutex::ScopedLock lk(_mu);
+    _debugLog.clear();
 }
 
 void Pop3Debug::fatalError(const char* fmt, ...)

@@ -9,6 +9,7 @@
 #include    <math.h>
 #include    <fstream>
 #include  <Poco/Path.h>
+#include  <Poco/Net/IPAddress.h>
 
 const std::string Pop3Network::tribes[] = { "Blue", "Red", "Yellow", "Green", "Cyan", "Pink", "Black", "Orange", "Neutral", "Spectator" };
 extern ULONGLONG getGameClockMiliseconds();
@@ -33,6 +34,20 @@ Pop3Network::Pop3Network() : player_num(0), connection_retries(0), am_host(false
 
 Pop3Network::~Pop3Network()
 {
+    // Fallback only -- Pop3NetworkUDP::~Pop3NetworkUDP must call this first,
+    // while the derived object (and its virtual Send) is still alive. Joining
+    // here also keeps a joinable std::thread member from calling terminate().
+    shutdown_watchdogs();
+}
+
+void Pop3Network::shutdown_watchdogs()
+{
+    m_shutdown = true;
+    cv2.broadcast(); // wake join_watchdog_func out of its 2s tryWait now
+    if (m_host_watchdog.joinable())
+        m_host_watchdog.join();
+    if (m_join_watchdog.joinable())
+        m_join_watchdog.join();
 }
 
 Poco::Mutex packet_info_mu;
@@ -66,13 +81,13 @@ Pop3ErrorStatusCodes Pop3Network::AreWeLobbied(NetworkDataCallbackProc theCallba
 
     if (start_mode == SM_HOSTING)
     {
-        std::thread(&Pop3Network::host_watchdog_func, this).detach();
+        m_host_watchdog = std::thread(&Pop3Network::host_watchdog_func, this);
         Pop3Debug::trace("I am host and my player number is %d", player_num);
     }
     else
     {
         Pop3Debug::trace("I am joining and my requested player num is %d", *GamePtrs.RequestedPlayerNum);
-        std::thread(&Pop3Network::join_watchdog_func, this).detach();
+        m_join_watchdog = std::thread(&Pop3Network::join_watchdog_func, this);
     }
     *GamePtrs.NetLobbied = TRUE;
     return Pop3ErrorStatusCodes::OK;
@@ -216,6 +231,8 @@ const std::list<class PacketInfo>& Pop3Network::getPacketInfo()
 
 void Pop3Network::transfer_file(DWORD to, const std::string & file_name, const char * data, size_t length)
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
+
     size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(length) / static_cast<double>(PART_PACKET_DATA_SIZE)));
     FT.FileParts.resize(number_of_parts);
 
@@ -258,32 +275,38 @@ void Pop3Network::transfer_file(DWORD to, const std::string & file_name, const c
 
 FileTransferStatus Pop3Network::getFileTransferStatus()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     return FT.Status;
 }
 
 unsigned int Pop3Network::getFileTransferPercent()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
     return static_cast<unsigned int>((FT.FilePartsRecv.size()/static_cast<double>(number_of_parts))*100);
 }
 
 size_t Pop3Network::getFileTransferTotalBytes()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     return FT.FileHeader.file_size;
 }
 
 size_t Pop3Network::getFileTransferRecievedBytes()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     return FT.FilePartsRecv.size()*PART_PACKET_DATA_SIZE;
 }
 
 std::string Pop3Network::getFileTransferName()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     return FT.FileHeader.file_name;
 }
 
 ULONGLONG Pop3Network::getFileTransferSleepTimer()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     return FT.SleepTimer;
 }
 
@@ -452,11 +475,25 @@ void Pop3Network::SendMyInfo(const char * peer_address, UWORD peer_port) const
     Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, 2 + sizeof(UNICODE_CHAR) * (std::min<size_t>(my_name.size(), MAX_PLAYER_NAME_LEN)));
 }
 
-void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char * buffer)
+void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char * buffer, DWORD payload_size)
 {
+    if (payload_size < 1)
+        return;
+
+    // Bound the record count by both the declared count and the actual payload
+    // size so a malicious/truncated HOST_PLAYERS datagram cannot walk past the
+    // receive buffer.
+    const DWORD REC = static_cast<DWORD>(2 + sizeof(UNICODE_CHAR) * (MAX_PLAYER_NAME_LEN));
+    int count = static_cast<unsigned char>(buffer[0]);
+    if (count > NETWORK_NUMBER_PLAYERS)
+        count = NETWORK_NUMBER_PLAYERS;
+    DWORD max_by_size = (payload_size - 1) / REC;
+    if (static_cast<DWORD>(count) > max_by_size)
+        count = static_cast<int>(max_by_size);
+
     char* buf = &buffer[1];
     // i increments over the number of players in data packet, not player IDs
-    for (int i = 0; i < buffer[0]; i++)
+    for (int i = 0; i < count; i++)
     {
         SWORD player_number = /*(buf[0] == 255) ? -1 :*/ buf[0];
         bool is_host = buf[1] > 0;
@@ -469,7 +506,7 @@ void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char *
             add_player("UNK", 0, player_number, is_host, reinterpret_cast<UNICODE_CHAR*>(&buf[2]));
         }
         // player data = 2 + MAX_PLAYER_NAME_LEN
-        buf += 2 + sizeof(UNICODE_CHAR) * (MAX_PLAYER_NAME_LEN);
+        buf += REC;
     }
 }
 
@@ -683,7 +720,27 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         break;
 
     case Pop3NetworkTypes::HOST_PLAYERS:
-        add_players(peer_address, peer_port, &buffer[2]);
+        // Only the host defines the player list; a client processing a spoofed
+        // HOST_PLAYERS could otherwise be renumbered/hijacked. Address-only
+        // check: the host's UDP port may legitimately rebind under NAT (see
+        // the bind-not-connect comment in Pop3NetworkUDP::RunServer).
+        if (am_host)
+            break;
+        // Compare PARSED addresses: peer_address is Poco's canonical numeric
+        // form while RemoteIPAddress is the raw typed --join text (127.1,
+        // zero-padded octets, ... would never strcmp-match and the join would
+        // hang). Unparseable/empty target -> skip the check.
+        if (GamePtrs.RemoteIPAddress && GamePtrs.RemoteIPAddress[0])
+        {
+            try
+            {
+                if (Poco::Net::IPAddress(std::string(peer_address)) !=
+                    Poco::Net::IPAddress(std::string(GamePtrs.RemoteIPAddress)))
+                    break;
+            }
+            catch (...) {}
+        }
+        add_players(peer_address, peer_port, &buffer[2], buf_size - 2);
         break;
 
     case Pop3NetworkTypes::HOST_ADD_PLAYER:
@@ -759,6 +816,7 @@ void Pop3Network::compile_fileparts()
 
 void Pop3Network::filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer)
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     FT.LastContactTime = GetCurrentMs();
     FT.FileHeader = *reinterpret_cast<const PopTBFileStartPacket*>(buffer);
     FT.peer_address = peer_address;
@@ -773,6 +831,7 @@ void Pop3Network::filetransfer_client_process_fileheader(const char * peer_addre
 
 void Pop3Network::filetransfer_host_process_client_ready(const char * peer_address, UWORD peer_port)
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     FT.LastContactTime = GetCurrentMs();
     FT.peer_address = peer_address;
     FT.peer_port = peer_port;
@@ -836,6 +895,7 @@ void Pop3Network::filetransfer_host_send_missing(const unsigned int * bitmap, un
 
 void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     if (FT.Status == FileTransferStatus::Transfer_Complete)
         return;
 
@@ -850,6 +910,7 @@ void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
 
 void Pop3Network::filetransfer_client_process_window_complete(const char * buffer)
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     if (FT.Status == FileTransferStatus::Transfer_Complete)
         return;
 
@@ -901,6 +962,7 @@ void Pop3Network::filetransfer_client_process_window_complete(const char * buffe
 
 void Pop3Network::filetransfer_host_process_window_ack(const char * buffer)
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     FT.LastContactTime = GetCurrentMs();
 
     auto ack = reinterpret_cast<const PopTBWindowAck*>(buffer);
@@ -957,6 +1019,7 @@ void Pop3Network::filetransfer_host_process_window_ack(const char * buffer)
 
 void Pop3Network::filetransfer_host_process_client_transfer_successful()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     FT.LastContactTime = 0;
     memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
     FT.FileParts.clear();
@@ -969,6 +1032,7 @@ void Pop3Network::filetransfer_host_process_client_transfer_successful()
 
 void Pop3Network::filetransfer_host_requesting_update()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     FT.LastContactTime = GetCurrentMs();
     switch (FT.Status)
     {
@@ -985,6 +1049,7 @@ void Pop3Network::filetransfer_host_requesting_update()
 
 void Pop3Network::filetransfer_tick()
 {
+    Poco::Mutex::ScopedLock lock(ft_mu);
     if (FT.Status == FileTransferStatus::Ready || FT.Status == FileTransferStatus::Transfer_Complete)
         return;
 
@@ -1072,10 +1137,13 @@ void Pop3Network::host_watchdog_func()
     network_status = NetworkStatus::Connected;
 
     // Do not allow joiners on init unless the game is already loaded!
-    while (!(*GamePtrs.GameState == GM_STATE_NORMAL && *GamePtrs.GameMode == GM_FRONTEND))
+    while (!(*GamePtrs.GameState == GM_STATE_NORMAL && *GamePtrs.GameMode == GM_FRONTEND) && !m_shutdown.load())
     {
         Poco::Thread::sleep(1); // Intentional 
     }
+    if (m_shutdown.load())
+        return; // torn down before start; do not stomp identity globals
+
     player_num = *GamePtrs.RequestedPlayerNum;
 
     // We successfully joined!
@@ -1088,21 +1156,34 @@ void Pop3Network::host_watchdog_func()
 
 void Pop3Network::join_watchdog_func()
 {
-    static bool first_time = true;
     network_status = NetworkStatus::Joining;
 
     // Wait until you're loaded!
-    while (!(*GamePtrs.GameState == GM_STATE_NORMAL && *GamePtrs.GameMode == GM_FRONTEND))
+    while (!(*GamePtrs.GameState == GM_STATE_NORMAL && *GamePtrs.GameMode == GM_FRONTEND) && !m_shutdown.load())
     {
         Poco::Thread::sleep(1); // Intentional 
     }
 
     Poco::Mutex cv_m;
-    while (true)
+    while (!m_shutdown.load())
     {
-        if (!first_time)
+        if (!m_join_first_time)
         {
-            if ((cv2.tryWait(cv_m, CONNECT_INTERVAL * 1000) && server_status == Pop3ErrorStatusCodes::OK) || network_status == NetworkStatus::Connected)
+            // Wait in 100ms slices re-checking m_shutdown: a broadcast that
+            // lands between the loop condition and tryWait would otherwise be
+            // lost and stall process exit for the full CONNECT_INTERVAL.
+            bool signalled = false;
+            for (int waited = 0; waited < CONNECT_INTERVAL * 1000 && !m_shutdown.load(); waited += 100)
+            {
+                if (cv2.tryWait(cv_m, 100))
+                {
+                    signalled = true;
+                    break;
+                }
+            }
+            if (m_shutdown.load())
+                return; // shutting down - skip the trailing send_join_request
+            if ((signalled && server_status == Pop3ErrorStatusCodes::OK) || network_status == NetworkStatus::Connected)
                 break;
 
             if (server_status != Pop3ErrorStatusCodes::OK)
@@ -1110,13 +1191,16 @@ void Pop3Network::join_watchdog_func()
 
             Pop3Debug::trace("Connecting (%d)...", ++connection_retries);
         }
-        else first_time = false;
+        else m_join_first_time = false;
 
         Pop3Debug::trace("Requesting host to join!");
 
         // Send join packet
         send_join_request();
     }
+
+    if (m_shutdown.load())
+        return; // aborted join must never stomp identity globals
 
     Pop3Debug::trace("Host has approved my connection!");
 

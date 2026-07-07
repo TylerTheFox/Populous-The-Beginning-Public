@@ -14,8 +14,15 @@ LbGlyphEmitOneColourFn _lbpGlyphEmitOneColourHook = NULL;
 //***************************************************************************
 // Static callback functions for TbTextRender
 //***************************************************************************
+// Audit F2 (audio_device_name_boxes): cChar < 32 used to compute a NEGATIVE
+// sprite index (unbounded read before the bank). Guard it in every callback;
+// such a char draws nothing and measures zero. The 128..255 overrun of banks
+// with fewer than 224 frames is NOT closable here - the callbacks receive
+// only the glyph array pointer, never a frame count (1998 format freeze) -
+// so callers must sanitize (see audio_ascii_fold in SoundManager.cpp).
 static void __cdecl SpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT cChar)
 {
+    if (cChar < 32) { lpSize->Width = 0; lpSize->Height = 0; return; }
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     lpSize->Width = spr->Width;
     lpSize->Height = spr->Height;
@@ -23,6 +30,7 @@ static void __cdecl SpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT 
 
 static UINT __cdecl SpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT cChar, TbColour col)
 {
+    if (cChar < 32) return 0;
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     if (_lbpGlyphEmitHook)
         _lbpGlyphEmitHook(x, y, spr);
@@ -33,6 +41,7 @@ static UINT __cdecl SpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT c
 
 static void __cdecl OneColourSpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT cChar)
 {
+    if (cChar < 32) { lpSize->Width = 0; lpSize->Height = 0; return; }
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     lpSize->Width = spr->Width;
     lpSize->Height = spr->Height;
@@ -40,6 +49,7 @@ static void __cdecl OneColourSpriteRender_OnMeasure(void *pParam, Pop3Size *lpSi
 
 static UINT __cdecl OneColourSpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT cChar, TbColour col)
 {
+    if (cChar < 32) return 0;
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     if (_lbpGlyphEmitOneColourHook)
         _lbpGlyphEmitOneColourHook(x, y, spr, col);

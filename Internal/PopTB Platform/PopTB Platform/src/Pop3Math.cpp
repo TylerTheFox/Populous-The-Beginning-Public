@@ -53,6 +53,38 @@ double Pop3Math::sqrt(double n)
     return std::sqrt(n);
 }
 
+// Integer square root, floor semantics: returns floor(sqrt(n)) for all
+// 32-bit n (classic binary restoring method). Used by SQUARE_ROOT so sim
+// math stays pure-integer and bit-identical across x86/x64/compilers
+// (lockstep determinism). Verified exhaustively equivalent to the previous
+// (ULONG)std::sqrt((double)n) over the full 32-bit domain, so switching
+// the macro changed no sim result.
+ULONG Pop3Math::isqrt(ULONG n)
+{
+    ULONG x = n;
+    ULONG res = 0;
+    ULONG bit = 1UL << 30;
+
+    while (bit > n)
+        bit >>= 2;
+
+    while (bit)
+    {
+        if (x >= res + bit)
+        {
+            x -= res + bit;
+            res = (res >> 1) + bit;
+        }
+        else
+        {
+            res >>= 1;
+        }
+        bit >>= 2;
+    }
+
+    return res;
+}
+
 UWORD Pop3Math::atantable[] =
 {
     0,

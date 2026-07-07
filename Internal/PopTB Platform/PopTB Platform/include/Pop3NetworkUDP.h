@@ -20,7 +20,7 @@ public:
     void ServerInit(UBYTE mode);
     void Send(int to_pn, const char* peer_address, UWORD peer_port, Pop3NetworkTypes type, const char* buffer, DWORD buf_size) const;
 private:
-    std::thread*                        _thread;
+    std::thread*                        _thread = nullptr;
     mutable Pop3UDPSocket               dgs;
     UBYTE                               _mode;
 

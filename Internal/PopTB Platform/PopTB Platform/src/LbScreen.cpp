@@ -461,17 +461,17 @@ TbError LbScreen_Swap(ULONG flags)
 
     _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_SWAP, NULL);
 
-    // Copy back surface → front surface (software blit)
-    UINT pitch = _lbBackSurface.SurfaceArea.mPitch;
-    UINT height = _lbBackSurface.SurfaceArea.mSize.Height;
-    memcpy(_lbFrontSurface.SurfaceArea.mpData, _lbBackSurface.SurfaceArea.mpData, pitch * height);
-
-    // Present the front surface through D3D9
+    // P4-04: present the BACK surface directly - present() consumes the
+    // pixels synchronously (uploadIndices memcpy / inline LockRect convert)
+    // and retains no pointer, and the front surface has no other pixel
+    // consumer; the full-framebuffer back->front memcpy that used to sit
+    // here was a dead copy (~0.7% CPU). The front surface remains only as
+    // LbScreen_PartSwap's letterbox compose target (512x384 path).
     Pop3Screen::present(
-        _lbFrontSurface.SurfaceArea.mpData,
-        _lbFrontSurface.SurfaceArea.mPitch,
-        _lbFrontSurface.SurfaceArea.mSize.Width,
-        _lbFrontSurface.SurfaceArea.mSize.Height,
+        _lbBackSurface.SurfaceArea.mpData,
+        _lbBackSurface.SurfaceArea.mPitch,
+        _lbBackSurface.SurfaceArea.mSize.Width,
+        _lbBackSurface.SurfaceArea.mSize.Height,
         (const unsigned char*)&_lbGlobalPalette.Entry[0]);
 
     // Phase 7 composite: prep the back surface for the next frame by

@@ -22,6 +22,16 @@ extern ULONGLONG    getGameClockMiliseconds();
 
 Pop3NetworkUDP::~Pop3NetworkUDP()
 {
+    // Stop the watchdogs from the most-derived dtor (they call virtual Send);
+    // then stop and join the receive thread.
+    shutdown_watchdogs();
+    if (_thread)
+    {
+        if (_thread->joinable())
+            _thread->join();
+        delete _thread;
+        _thread = nullptr;
+    }
 }
 
 void Pop3NetworkUDP::ServerInit(UBYTE mode)
@@ -78,13 +88,13 @@ void Pop3NetworkUDP::RunServer()
         // Set receive timeout so the loop can tick file transfers even without incoming packets
         dgs.setReceiveTimeout(Poco::Timespan(0, 100000)); // 100ms
 
-        while (!(*GamePtrs.GnsiFlags & GNS_QUITTING) && !Pop3App::isQuitting())
+        while (!(*GamePtrs.GnsiFlags & GNS_QUITTING) && !Pop3App::isQuitting() && !m_shutdown.load())
         {
             try
             {
                 Poco::Net::SocketAddress sender;
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
-                if ((*GamePtrs.GnsiFlags & GNS_QUITTING) && Pop3App::isQuitting())
+                if (((*GamePtrs.GnsiFlags & GNS_QUITTING) && Pop3App::isQuitting()) || m_shutdown.load())
                     return;
 
                 if (first_connection)

@@ -10,6 +10,7 @@ public:
     static UWORD                    ArcTan(SLONG dx, SLONG dy);
     static signed long              ROR13(signed long val);
     static double                   sqrt(double i);
+    static ULONG                    isqrt(ULONG n);
 
     static SLONG                    SinTable[];
     static UWORD                    atantable[];

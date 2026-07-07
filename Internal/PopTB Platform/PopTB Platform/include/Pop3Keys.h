@@ -124,7 +124,7 @@ typedef enum Pop3InputKey
     LB_KEY_MOUSE3 = (SDL_BUTTON_X1           + MOUSE_ENUM_OFFSET),
     LB_KEY_MOUSE4 = (SDL_BUTTON_X2           + MOUSE_ENUM_OFFSET)
 } TbInputKey;
-#define MAX_KEYS				LB_KEY_MOUSE4
+#define MAX_KEYS				(LB_KEY_MOUSE4 + 1)  // +1: MAX_KEYS is an array SIZE; LB_KEY_MOUSE4 itself must be indexable
 #define LB_KEY_MOUSE_LEFT       LB_KEY_MOUSE0
 #define LB_KEY_MOUSE_RIGHT      LB_KEY_MOUSE1
 #define LB_KEY_MOUSE_MIDDLE     LB_KEY_MOUSE2

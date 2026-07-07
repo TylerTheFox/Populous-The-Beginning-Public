@@ -33,7 +33,11 @@ public:
     static void fatalError_NoReport(const char* fmt, ...);
     static std::string getLogPath();
 
-    static std::vector<std::string> & getOutputVect();
+    // Snapshot of the in-memory trace ring, copied under _mu.  UI panels
+    // must use this (never a live reference): trace() on other threads
+    // erases/reallocates _debugLog, invalidating any outstanding refs.
+    static std::vector<std::string> getOutputSnapshot();
+    static void clearOutput();
 private:
     static void writeToLog(const std::string & data);
     static void writeToLog(const char* data);
