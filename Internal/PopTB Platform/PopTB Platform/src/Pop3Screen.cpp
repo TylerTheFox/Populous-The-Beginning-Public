@@ -77,6 +77,11 @@ namespace {
     int    _pp_accCount = 0;
 
     double _pp_avgConvert = 0.0, _pp_avgDraw = 0.0, _pp_avgPresent = 0.0, _pp_avgFrame = 0.0, _pp_avgFps = 0.0;
+
+    // Suppress the once/sec [frametime] fps log line by default - it spammed
+    // the debug output. Set true to re-enable. The averages above are still
+    // computed for the on-screen overlay (getFrameTimingMs()).
+    bool   _pp_logFps = false;
 }
 
 void Pop3Screen::setPresentMode(bool vsync, int maxFps)
@@ -631,6 +636,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
         _pp_avgPresent = _pp_accPresent / _pp_accCount;
         _pp_avgFrame   = _pp_accFrame   / _pp_accCount;
         _pp_avgFps     = _pp_avgFrame > 0.0 ? 1000.0 / _pp_avgFrame : 0.0;
+        if (_pp_logFps)
         Pop3Debug::trace("[frametime] fps=%.1f frame=%.2fms | convert+upload=%.2f draw=%.2f present=%.2f  (n=%d vsync=%d maxfps=%d)\n",
                          _pp_avgFps, _pp_avgFrame, _pp_avgConvert, _pp_avgDraw, _pp_avgPresent,
                          _pp_accCount, s_vsync ? 1 : 0, s_maxFps);

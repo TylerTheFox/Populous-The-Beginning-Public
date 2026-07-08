@@ -97,6 +97,15 @@ void Pop3NetworkUDP::RunServer()
                 // HOST_PLAYERS records) read fixed widths past short payloads
                 // and rely on the buffer being null beyond the datagram.
                 memset(buf, 0, sizeof(buf));
+                // Poll first so an idle lobby socket doesn't throw+catch
+                // TimeoutException ~10x/sec (the 100ms receive timeout set
+                // above stays as a safety net). Only call receiveFrom when a
+                // datagram is actually ready; otherwise just tick transfers.
+                if (!dgs.poll(Poco::Timespan(0, 100000), Poco::Net::Socket::SELECT_READ))
+                {
+                    filetransfer_tick();
+                    continue;
+                }
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
                 if (((*GamePtrs.GnsiFlags & GNS_QUITTING) && Pop3App::isQuitting()) || m_shutdown.load())
                     return;
