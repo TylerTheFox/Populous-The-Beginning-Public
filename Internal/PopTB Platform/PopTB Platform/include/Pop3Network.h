@@ -269,6 +269,10 @@ public:
     // Misc Functions.
     static ULONGLONG                                GetCurrentMs();
     POP3NETWORK_PLAYERINFO &                        GetPlayerDetails(UBYTE playernum);
+    // Copy a peer's name under players_mu into a caller buffer. Use this instead
+    // of GetPlayerDetails().name when the id may be a spectator (map node can be
+    // erased on the network thread by the reaper / HOST_DELETE_PLAYER).
+    void                                            GetPlayerNameCopy(UBYTE playernum, UNICODE_CHAR* out, size_t out_len);
     int                                             GetPlayerCount();
     bool                                            am_i_host() const;
     const NetworkStatus                             getStatus() const;
@@ -322,6 +326,15 @@ private:
     // thread's filetransfer_* handlers and filetransfer_tick). Lock order:
     // ft_mu is taken BEFORE players_mu (via Send); never the reverse.
     mutable Poco::Mutex ft_mu;
+
+    // Host-only spectator liveness tracking. Spectators (uniquePlayerId >=
+    // NETWORK_NUMBER_PLAYERS) live only in the peer `players` map, OUTSIDE the
+    // fixed 0..N-1 dropout loop, so a crashed spectator would otherwise linger
+    // forever and the host would relay to a dead address. Touched only on the
+    // host network thread (ParsePacket) - kept out of POP3NETWORK_PLAYERINFO so
+    // the shared gnsi.Net.PlayerInfo[] layout is unchanged.
+    std::map<SWORD, ULONGLONG> m_spectator_last_contact;
+    ULONGLONG                  m_last_spectator_sweep_ms = 0;
 
     // Utility Functions
     void                                            send_remove_player(SWORD player_id);

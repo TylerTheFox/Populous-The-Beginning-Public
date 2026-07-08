@@ -98,6 +98,7 @@ BOOL Pop3Network::GetPlayerInfo(POP3NETWORK_PLAYERINFO * out_player)
     for (int i = 0; i < NETWORK_NUMBER_PLAYERS; i++)
     {
         out_player[i].inUse = FALSE;
+        out_player[i].dwFlags = 0;
     }
 
     Poco::Mutex::ScopedLock lock(players_mu);
@@ -107,6 +108,7 @@ BOOL Pop3Network::GetPlayerInfo(POP3NETWORK_PLAYERINFO * out_player)
         {
             out_player[player.second.uniquePlayerId].inUse = player.second.inUse;
             out_player[player.second.uniquePlayerId].host = player.second.host;
+            out_player[player.second.uniquePlayerId].dwFlags = player.second.dwFlags;
             std::char_traits<UNICODE_CHAR>::copy(&out_player[player.second.uniquePlayerId].name[0], &player.second.name[0], MAX_PLAYER_NAME_LEN);
         }
     }
@@ -144,8 +146,11 @@ int Pop3Network::SendChat(BYTE chat_targets, const UNICODE_CHAR * message)
     int len = sizeof(UNICODE_CHAR) * (std::char_traits<UNICODE_CHAR>::length(message) + 1);
     buf[0] = static_cast<char>(player_num); // from
     buf[1] = chat_targets; // to
-                           // Always add self to chat
-    buf[1] |= (1 << player_num);
+    // Add self to the 0..N-1 target bitmask. A spectator (id >= NETWORK_NUMBER_
+    // PLAYERS) has no bit here and only ever uses CHAT_ALL, and (1 << id) would
+    // be out of range / UB for a large spectator id, so skip the shift for it.
+    if (player_num < NETWORK_NUMBER_PLAYERS)
+        buf[1] |= (1 << player_num);
     memcpy(&buf[2], reinterpret_cast<const char*>(message), len);
     if (am_host)
     {
@@ -177,7 +182,9 @@ ULONGLONG Pop3Network::GetCurrentMs()
 
 POP3NETWORK_PLAYERINFO & Pop3Network::GetPlayerDetails(UBYTE playernum)
 {
-    UEXCEED(playernum, NETWORK_NUMBER_PLAYERS - 1);
+    // No clamp: spectator ids are >= NETWORK_NUMBER_PLAYERS and must resolve to
+    // their real map entry. This is a map search, not an array index, and an
+    // unmatched id returns the static empty (inUse=FALSE) record below.
     Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
@@ -190,6 +197,22 @@ POP3NETWORK_PLAYERINFO & Pop3Network::GetPlayerDetails(UBYTE playernum)
     static POP3NETWORK_PLAYERINFO ret{};
     ret.inUse = FALSE;
     return ret;
+}
+
+void Pop3Network::GetPlayerNameCopy(UBYTE playernum, UNICODE_CHAR* out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    out[0] = 0;
+    Poco::Mutex::ScopedLock lock(players_mu);
+    for (auto& player : players)
+    {
+        if (player.second.inUse && player.second.uniquePlayerId == playernum)
+        {
+            std::char_traits<UNICODE_CHAR>::copy(out, &player.second.name[0], out_len - 1);
+            out[out_len - 1] = 0;
+            return;
+        }
+    }
 }
 
 int Pop3Network::GetPlayerCount()
@@ -340,8 +363,18 @@ int Pop3Network::ProcessChat(const char * buf, int buf_len)
         SendChatToAll(buf, buf_len);
     }
 
-    // If message is from or to me
-    if (buf[0] == player_num || (buf[1] & (1 << player_num)) > 0)
+    // If message is from or to me. A local spectator (player_num >= NETWORK_
+    // NUMBER_PLAYERS) has no bit in the 0..N-1 mask and (1 << player_num) would
+    // be UB, so it receives all-chat via the CHAT_ALL check instead.
+    bool to_me = (buf[0] == player_num);
+    if (!to_me)
+    {
+        if (player_num < NETWORK_NUMBER_PLAYERS)
+            to_me = ((buf[1] & (1 << player_num)) > 0);
+        else
+            to_me = (static_cast<BYTE>(buf[1]) == static_cast<BYTE>(CHAT_ALL));
+    }
+    if (to_me)
     {
         //if (!is_blocked(buf[0]))
         {
@@ -362,6 +395,22 @@ int Pop3Network::SendChatToAll(const char * buf, int buf_len)
             {
                 Send(i, Pop3NetworkTypes::POP_CHAT, buf, buf_len);
             }
+        }
+        // Spectators live outside the 0..N-1 chat bitmask, so the loop above can
+        // never address them. Relay all-chat to every connected spectator
+        // (id >= NETWORK_NUMBER_PLAYERS) explicitly. Collect ids under the lock,
+        // then Send (which re-locks internally) outside it.
+        if (static_cast<BYTE>(buf[1]) == static_cast<BYTE>(CHAT_ALL))
+        {
+            std::vector<SWORD> spec_ids;
+            {
+                Poco::Mutex::ScopedLock lock(players_mu);
+                for (const auto& p : players)
+                    if (p.second.inUse && p.second.uniquePlayerId >= NETWORK_NUMBER_PLAYERS)
+                        spec_ids.push_back(p.second.uniquePlayerId);
+            }
+            for (SWORD sid : spec_ids)
+                Send(sid, Pop3NetworkTypes::POP_CHAT, buf, buf_len);
         }
     }
     return TRUE;
@@ -387,7 +436,7 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
     version.byte.c2 = buffer[3];
     BYTE pn = buffer[4];
     bool allowed_pn = true;
-    ASSERT(pn < MAX_NUM_REAL_PLAYERS + MAX_NUM_SPECTATORS || pn == static_cast<BYTE>(DATA_NOT_SET));
+    ASSERT(pn < NETWORK_NUMBER_PLAYERS || pn == static_cast<BYTE>(DATA_NOT_SET)); // slot SPECTATOR_SLOT(9) is a valid spectator request
 
     Pop3Debug::trace("Join request recieved from %s on port %d requesting player number %d on build %d.%d.%d", peer_address, peer_port, pn, buffer[0], buffer[1], version.s);
 
@@ -536,7 +585,27 @@ SWORD Pop3Network::add_player(const char * peer_address, UWORD peer_port, SWORD 
     }
 
 
-    if (am_host)
+    const bool wants_spectator = (player_number == SPECTATOR_SLOT);
+    if (am_host && wants_spectator)
+    {
+        // Unlimited spectators: assign the lowest free network id at or above
+        // NETWORK_NUMBER_PLAYERS. Spectator ids live OUTSIDE the fixed 0..N-1
+        // game slots (GetPlayerInfo skips ids >= NETWORK_NUMBER_PLAYERS), so they
+        // never enter any peer's player array and never touch the sim/checksum.
+        // This is routing state, not sim state: it only needs to be collision-
+        // free, not deterministic.
+        SWORD id = NETWORK_NUMBER_PLAYERS;
+        for (;;)
+        {
+            bool taken = false;
+            for (const auto& p : players)
+                if (p.second.inUse && p.second.uniquePlayerId == id) { taken = true; break; }
+            if (!taken) break;
+            id++;
+        }
+        player_number = id;
+    }
+    else if (am_host)
     {
 		// Don't add duplicate player numbers.
 		for (const auto& player : players)
@@ -554,7 +623,7 @@ SWORD Pop3Network::add_player(const char * peer_address, UWORD peer_port, SWORD 
 		// Lets find a free spot.
 		bool valid;
 		SWORD free_pn;
-		for (free_pn = 0; free_pn < NETWORK_NUMBER_PLAYERS; free_pn++)
+		for (free_pn = 0; free_pn < SPECTATOR_SLOT; free_pn++) // never auto-assign a real player into the reserved spectator slot
 		{
 			valid = true;
 			for (const auto& player : players)
@@ -572,7 +641,7 @@ SWORD Pop3Network::add_player(const char * peer_address, UWORD peer_port, SWORD 
 				break;
 		}
 
-		if (free_pn >= NETWORK_NUMBER_PLAYERS)
+		if (free_pn >= SPECTATOR_SLOT)
 		{
 			Pop3Debug::trace("No open slots, cannot join!");
 			return -1; // Server's full!
@@ -588,6 +657,10 @@ SWORD Pop3Network::add_player(const char * peer_address, UWORD peer_port, SWORD 
     POP3NETWORK_PLAYERINFO player{};
     player.inUse = TRUE;
     player.uniquePlayerId = player_number;
+    // Slot SPECTATOR_SLOT is reserved exclusively for spectators, so the
+    // spectator cap is a pure function of the slot number: every peer derives
+    // it identically, with no change to the on-wire player record.
+    player.dwFlags = (player_number >= NETWORK_NUMBER_PLAYERS) ? POP3NETWORK_PLAYERCAPS_SPECTATOR : 0;
     std::char_traits<UNICODE_CHAR>::copy(&player.name[0], player_name, MAX_PLAYER_NAME_LEN);
     player.name[MAX_PLAYER_NAME_LEN - 1] = '\0';
     player.blocked = false;// this->isBlocked(player.name);
@@ -685,6 +758,35 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
     bool is_host;
     SWORD player_number;
     SWORD from_id = get_player_id(peer_address, peer_port);
+
+    // Host-side liveness / reaping for spectators (id >= NETWORK_NUMBER_PLAYERS).
+    // They are not in the 0..N-1 dropout loop, so refresh a per-id timer on any
+    // packet and periodically drop spectators that have gone silent (crash /
+    // lost connection). Host network-thread only: m_spectator_last_contact is
+    // touched nowhere else, so it needs no lock; removal uses the map-locked
+    // helpers. Pure network housekeeping - no sim state, cannot desync.
+    if (am_host)
+    {
+        const ULONGLONG now = GetCurrentMs();
+        if (from_id >= NETWORK_NUMBER_PLAYERS)
+            m_spectator_last_contact[from_id] = now;
+
+        if (now - m_last_spectator_sweep_ms >= 5000)
+        {
+            m_last_spectator_sweep_ms = now;
+            std::vector<SWORD> stale;
+            for (const auto& kv : m_spectator_last_contact)
+                if (now - kv.second >= 30000)   // 30s idle -> reap
+                    stale.push_back(kv.first);
+            for (SWORD sid : stale)
+            {
+                Pop3Debug::trace("Reaping idle spectator id %d", sid);
+                m_spectator_last_contact.erase(sid);
+                send_remove_player(sid);
+                remove_player_impl(sid);
+            }
+        }
+    }
 
     PacketInfo pi;
     pi.from_id = from_id;
@@ -1209,9 +1311,16 @@ void Pop3Network::join_watchdog_func()
 
     Pop3Debug::trace("Host has approved my connection!");
 
-    ASSERT(player_num < NETWORK_NUMBER_PLAYERS && player_num > 0);
+    // A spectator's real routing id is >= NETWORK_NUMBER_PLAYERS (unlimited
+    // spectators). The game's identity globals index fixed size-
+    // NETWORK_NUMBER_PLAYERS arrays and gsi.Players[MAX_NUM_PLAYERS], so clamp a
+    // spectator to SPECTATOR_SLOT for local bookkeeping; the real routing id
+    // stays in Pop3Network::player_num (used for all wire routing).
+    const bool i_am_spectator = (*GamePtrs.RequestedPlayerNum == SPECTATOR_SLOT);
+    ASSERT((player_num > 0 && player_num < NETWORK_NUMBER_PLAYERS) || i_am_spectator);
 
     // We successfully joined!
-    *GamePtrs.PlayerNum = static_cast<SBYTE>(player_num);
-    *GamePtrs.NetMyPlayerNumber = player_num;
+    const SBYTE exported = i_am_spectator ? static_cast<SBYTE>(SPECTATOR_SLOT) : static_cast<SBYTE>(player_num);
+    *GamePtrs.PlayerNum = exported;
+    *GamePtrs.NetMyPlayerNumber = exported;
 }
