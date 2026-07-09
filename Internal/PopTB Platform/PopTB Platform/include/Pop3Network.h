@@ -57,7 +57,13 @@ enum class Pop3NetworkTypes
     CLIENT_FILE_TRANSFER_COMPLETE,
     CLIENT_RESEND_FILE_PART,
     CLIENT_RESNET_FILE_PARTS_COMPLETE,
-    HOST_REQUESTING_UPDATE_ON_TRANSFER
+    HOST_REQUESTING_UPDATE_ON_TRANSFER,
+    // Host -> client: there is no (longer an) active transfer for you - the
+    // host aborted (retry cap) or was restarted. The client resets its FT
+    // state to Ready so the lobby UI unsticks and the Sync button returns.
+    // Appended at the enum tail: wire-compatible within a build, and MP
+    // already requires identical builds (version-gated join).
+    HOST_TRANSFER_ABORTED
 };
 
 enum class Pop3ErrorStatusCodes
@@ -244,6 +250,14 @@ struct FileTransfer
     unsigned int        total_parts = 0;
     unsigned int        retry_count = 0;
     ULONGLONG           window_send_time = 0;
+
+    // Recipient network id (host side; -1 when idle / client side). Captured
+    // at transfer_file() time together with the endpoint so every retry and
+    // status-query path has somewhere to send - previously peer_address was
+    // only learned from the client's READY packet, so losing the FIRST
+    // header datagram left the host retrying into an empty address forever
+    // (and the transfer slot busy for the rest of the session).
+    SWORD               peer_id = -1;
 };
 
 class Pop3Network
@@ -283,11 +297,15 @@ public:
 
     void                                            transfer_file(DWORD to, const std::string & file_name, const char * data, size_t length);
     FileTransferStatus                              getFileTransferStatus();
+    // Percent is side-aware: receiving side = parts received / total; sending
+    // side = window progress through the parts (previously always 0 for the
+    // host because it counted FilePartsRecv, which only the receiver fills).
     unsigned int                                    getFileTransferPercent();
     size_t                                          getFileTransferTotalBytes();
     size_t                                          getFileTransferRecievedBytes();
     std::string                                     getFileTransferName();
     ULONGLONG                                       getFileTransferSleepTimer();
+    SWORD                                           getFileTransferPeerId();   // host side: recipient network id (-1 idle)
 protected:
     // Data
     int                                             player_num;
@@ -364,7 +382,9 @@ private:
     void                                            filetransfer_host_process_client_transfer_successful();
     void                                            filetransfer_host_send_window();
     void                                            filetransfer_host_send_missing(const unsigned int * bitmap, unsigned int ws, unsigned int wsize);
-    void                                            filetransfer_host_requesting_update();
+    void                                            filetransfer_host_requesting_update(const char * peer_address, UWORD peer_port);
+    void                                            filetransfer_client_process_aborted();
+    void                                            filetransfer_abort_locked(const char * reason);   // ft_mu held: notify peer + reset to Ready
 protected:
     void                                            filetransfer_tick();
 

@@ -303,11 +303,67 @@ void Pop3Network::transfer_file(DWORD to, const std::string & file_name, const c
     FT.window_size = FT_INITIAL_WINDOW_SIZE;
     FT.total_parts = static_cast<unsigned int>(number_of_parts);
     FT.retry_count = 0;
+
+    // Capture the recipient's id AND endpoint NOW (lock order ft_mu ->
+    // players_mu, same as the Send(to,...) below). Previously the endpoint
+    // was only learned from the client's READY reply, so a lost first
+    // header datagram left every retry sending into an empty address and
+    // the transfer slot busy for the rest of the session - all later sync
+    // requests were then silently ignored.
+    FT.peer_id = -1;
+    FT.peer_address.clear();
+    FT.peer_port = 0;
+    {
+        Poco::Mutex::ScopedLock plock(players_mu);
+        for (auto& player : players)
+        {
+            if (player.second.inUse && player.second.uniquePlayerId == static_cast<SWORD>(to))
+            {
+                FT.peer_id = player.second.uniquePlayerId;
+                FT.peer_address = player.second.address;
+                FT.peer_port = player.second.port;
+                break;
+            }
+        }
+    }
+    if (FT.peer_id < 0 || FT.peer_address.empty() || FT.peer_port == 0)
+    {
+        Pop3Debug::trace("transfer_file: no routable peer for id %u - not starting", to);
+        FT.Status = FileTransferStatus::Ready;
+        FT.FileParts.clear();
+        FT.total_parts = 0;
+        return;
+    }
+
     FT.Status = FileTransferStatus::Host_Waiting_On_Client_Ack;
     FT.LastContactTime = GetCurrentMs();
 
-    Pop3Debug::trace("Sending file (%u parts, window=%u)...", FT.total_parts, FT.window_size);
-    Send(to, Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER, reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
+    Pop3Debug::trace("Sending file '%s' (%u parts, window=%u) to player %d...",
+                     FT.FileHeader.file_name, FT.total_parts, FT.window_size, (int)FT.peer_id);
+    Send(-1, FT.peer_address.c_str(), FT.peer_port,
+         Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER,
+         reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
+}
+
+// ft_mu already held. Tell the peer the transfer is dead, then reset to
+// Ready so the next sync request can start a fresh one (previously several
+// states could never leave "busy", permanently disabling the sync system
+// for the session).
+void Pop3Network::filetransfer_abort_locked(const char * reason)
+{
+    Pop3Debug::trace("File transfer aborted: %s", reason);
+    if (!FT.peer_address.empty() && FT.peer_port)
+        Send(-1, FT.peer_address.c_str(), FT.peer_port,
+             Pop3NetworkTypes::HOST_TRANSFER_ABORTED, nullptr, 0);
+    memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
+    FT.FileParts.clear();
+    FT.total_parts = 0;
+    FT.FilePartsRecv.clear();
+    FT.peer_address.clear();
+    FT.peer_port = 0;
+    FT.peer_id = -1;
+    FT.retry_count = 0;
+    FT.Status = FileTransferStatus::Ready;
 }
 
 FileTransferStatus Pop3Network::getFileTransferStatus()
@@ -319,8 +375,29 @@ FileTransferStatus Pop3Network::getFileTransferStatus()
 unsigned int Pop3Network::getFileTransferPercent()
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
+    switch (FT.Status)
+    {
+    case FileTransferStatus::Host_Waiting_On_Client_Ack:
+    case FileTransferStatus::Host_Sending_Window:
+    case FileTransferStatus::Host_Waiting_On_Window_Ack:
+    case FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer:
+        // Sending side: FilePartsRecv is only ever filled by the RECEIVER,
+        // so the old maths pinned the host at 0% - report acked-window
+        // progress instead.
+        if (FT.total_parts == 0) return 0;
+        return static_cast<unsigned int>((FT.window_start / static_cast<double>(FT.total_parts)) * 100);
+    default:
+        break;
+    }
     size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
+    if (number_of_parts == 0) return 0;
     return static_cast<unsigned int>((FT.FilePartsRecv.size()/static_cast<double>(number_of_parts))*100);
+}
+
+SWORD Pop3Network::getFileTransferPeerId()
+{
+    Poco::Mutex::ScopedLock lock(ft_mu);
+    return FT.peer_id;
 }
 
 size_t Pop3Network::getFileTransferTotalBytes()
@@ -965,7 +1042,14 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         filetransfer_host_process_client_transfer_successful();
         break;
     case  Pop3NetworkTypes::HOST_REQUESTING_UPDATE_ON_TRANSFER:
-        filetransfer_host_requesting_update();
+        filetransfer_host_requesting_update(peer_address, peer_port);
+        break;
+    case Pop3NetworkTypes::HOST_TRANSFER_ABORTED:
+        // Host->client only: a host processing this (crafted/reflected)
+        // would tear down its own in-flight transfer to a DIFFERENT client.
+        if (am_host)
+            break;
+        filetransfer_client_process_aborted();
         break;
     default:
         break;
@@ -1013,6 +1097,13 @@ void Pop3Network::filetransfer_client_process_fileheader(const char * peer_addre
 void Pop3Network::filetransfer_host_process_client_ready(const char * peer_address, UWORD peer_port)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
+    // Wire-driven: a stale/duplicated/crafted READY after the transfer ended
+    // would otherwise restart the send loop over a CLEARED FileParts vector
+    // (out-of-bounds read transmitted onto the wire).
+    if (FT.Status != FileTransferStatus::Host_Waiting_On_Client_Ack &&
+        FT.Status != FileTransferStatus::Host_Sending_Window &&
+        FT.Status != FileTransferStatus::Host_Waiting_On_Window_Ack)
+        return;
     FT.LastContactTime = GetCurrentMs();
     FT.peer_address = peer_address;
     FT.peer_port = peer_port;
@@ -1027,6 +1118,8 @@ void Pop3Network::filetransfer_host_send_window()
 
     for (unsigned int i = FT.window_start; i < window_end; i++)
     {
+        if (i >= FT.FileParts.size())   // belt: never index past the part store
+            break;
         Send(-1, FT.peer_address.c_str(), FT.peer_port,
             Pop3NetworkTypes::HOST_SEND_FILE_PART,
             reinterpret_cast<const char*>(&FT.FileParts[i]), sizeof(PopTBFilePartPacket));
@@ -1056,6 +1149,8 @@ void Pop3Network::filetransfer_host_send_missing(const unsigned int * bitmap, un
         bool received = (bitmap[offset / 32] >> (offset % 32)) & 1;
         if (!received)
         {
+            if (i >= FT.FileParts.size())   // belt: never index past the part store
+                break;
             Send(-1, FT.peer_address.c_str(), FT.peer_port,
                 Pop3NetworkTypes::HOST_SEND_FILE_PART,
                 reinterpret_cast<const char*>(&FT.FileParts[i]), sizeof(PopTBFilePartPacket));
@@ -1081,6 +1176,7 @@ void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
         return;
 
     FT.LastContactTime = GetCurrentMs();
+    FT.retry_count = 0;   // progress - rearm the give-up counter
     auto fp_ptr = reinterpret_cast<const PopTBFilePartPacket*>(buffer);
 
     if (!FT.FilePartsRecv.count(fp_ptr->packet_num))
@@ -1144,6 +1240,12 @@ void Pop3Network::filetransfer_client_process_window_complete(const char * buffe
 void Pop3Network::filetransfer_host_process_window_ack(const char * buffer)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
+    // Wire-driven: an ACK that arrives after the transfer ended (UDP
+    // duplicate/reorder, or crafted) must not walk the cleared FileParts.
+    if (FT.Status != FileTransferStatus::Host_Sending_Window &&
+        FT.Status != FileTransferStatus::Host_Waiting_On_Window_Ack &&
+        FT.Status != FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer)
+        return;
     FT.LastContactTime = GetCurrentMs();
 
     auto ack = reinterpret_cast<const PopTBWindowAck*>(buffer);
@@ -1207,23 +1309,72 @@ void Pop3Network::filetransfer_host_process_client_transfer_successful()
     FT.FilePartsRecv.clear();
     FT.peer_address.clear();
     FT.peer_port = 0;
+    FT.peer_id = -1;
+    FT.retry_count = 0;
+    FT.total_parts = 0;
     FT.Status = FileTransferStatus::Transfer_Complete;
     Pop3Debug::trace("Host: client confirmed transfer complete");
 }
 
-void Pop3Network::filetransfer_host_requesting_update()
+// Client: the host says there is no (longer an) active transfer for us -
+// unstick the UI (progress bar disappears, the lobby Sync button returns).
+void Pop3Network::filetransfer_client_process_aborted()
+{
+    Poco::Mutex::ScopedLock lock(ft_mu);
+    if (FT.Status == FileTransferStatus::Ready || FT.Status == FileTransferStatus::Transfer_Complete)
+        return;
+    Pop3Debug::trace("File transfer aborted by host");
+    memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
+    FT.FileParts.clear();
+    FT.FilePartsRecv.clear();
+    FT.peer_address.clear();
+    FT.peer_port = 0;
+    FT.peer_id = -1;
+    FT.retry_count = 0;
+    FT.total_parts = 0;
+    FT.Status = FileTransferStatus::Ready;
+}
+
+// A stalled RECEIVER asks "what's the state of my transfer?". Reply to the
+// ASKER's endpoint (the old code replied to FT.peer_address, which is empty
+// once a transfer completes or aborts - the asker never heard anything and
+// stayed stuck "Downloading..." forever). For every active host state,
+// resend what the receiver is missing; when there is nothing in flight for
+// it, say so explicitly so it can reset.
+void Pop3Network::filetransfer_host_requesting_update(const char * peer_address, UWORD peer_port)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
     FT.LastContactTime = GetCurrentMs();
     switch (FT.Status)
     {
-    case FileTransferStatus::Transfer_Complete:
-        Send(-1, FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_FILE_TRANSFER_COMPLETE, nullptr, 0);
+    case FileTransferStatus::Host_Waiting_On_Client_Ack:
+        // Header may have been lost - resend it.
+        Send(-1, peer_address, peer_port,
+             Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER,
+             reinterpret_cast<char*>(&FT.FileHeader), sizeof(FT.FileHeader));
+        break;
+    case FileTransferStatus::Host_Sending_Window:
+    case FileTransferStatus::Host_Waiting_On_Window_Ack:
+        // The window (or its end marker) was lost - resend the current
+        // window. Previously this hit `default: break` and the host ignored
+        // a stalled client forever (deadlock until the 20-retry abort).
+        filetransfer_host_send_window();
+        break;
+    case FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer:
+        // All windows are out but the client is still asking: it lost part
+        // of the final window - resend it.
+        filetransfer_host_send_window();
         break;
     case FileTransferStatus::Client_Waiting_On_Host_To_Start:
-        Send(FT.peer_address.c_str(), FT.peer_port, Pop3NetworkTypes::CLIENT_READY_FOR_FILE_TRANSFER);
+        Send(peer_address, peer_port, Pop3NetworkTypes::CLIENT_READY_FOR_FILE_TRANSFER);
         break;
+    case FileTransferStatus::Transfer_Complete:
+    case FileTransferStatus::Ready:
     default:
+        // Nothing in flight for the asker - tell it so it can reset its UI
+        // instead of re-asking every 3 seconds forever.
+        Send(-1, peer_address, peer_port,
+             Pop3NetworkTypes::HOST_TRANSFER_ABORTED, nullptr, 0);
         break;
     }
 }
@@ -1244,8 +1395,7 @@ void Pop3Network::filetransfer_tick()
             FT.retry_count++;
             if (FT.retry_count > FT_MAX_RETRIES)
             {
-                Pop3Debug::trace("File transfer aborted: too many retries");
-                FT.Status = FileTransferStatus::Ready;
+                filetransfer_abort_locked("window ack: too many retries");
                 return;
             }
             FT.window_size = (std::max)((unsigned int)FT_MIN_WINDOW_SIZE, FT.window_size / 2);
@@ -1257,6 +1407,17 @@ void Pop3Network::filetransfer_tick()
     case FileTransferStatus::Host_Waiting_On_Client_Ack:
         if ((now - FT.LastContactTime) > 2000)
         {
+            // Previously uncapped AND FT.peer_address was empty until the
+            // client's READY arrived - a lost first header left this state
+            // retrying into nowhere forever, with the transfer slot busy
+            // for the rest of the session (every later sync request was
+            // silently ignored).
+            FT.retry_count++;
+            if (FT.retry_count > FT_MAX_RETRIES)
+            {
+                filetransfer_abort_locked("client never acknowledged the transfer header");
+                return;
+            }
             FT.LastContactTime = now;
             Send(-1, FT.peer_address.c_str(), FT.peer_port,
                 Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER,
@@ -1267,6 +1428,12 @@ void Pop3Network::filetransfer_tick()
     case FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer:
         if ((now - FT.LastContactTime) > FT_WINDOW_TIMEOUT_MS)
         {
+            FT.retry_count++;
+            if (FT.retry_count > FT_MAX_RETRIES)
+            {
+                filetransfer_abort_locked("client never confirmed completion");
+                return;
+            }
             FT.LastContactTime = now;
             Send(-1, FT.peer_address.c_str(), FT.peer_port,
                 Pop3NetworkTypes::HOST_REQUESTING_UPDATE_ON_TRANSFER, nullptr, 0);
@@ -1277,6 +1444,21 @@ void Pop3Network::filetransfer_tick()
     case FileTransferStatus::Client_Waiting_On_Host_To_Start:
         if ((now - FT.LastContactTime) > FT_WINDOW_TIMEOUT_MS)
         {
+            // Give up eventually (host quit / crashed mid-transfer) so the
+            // lobby UI unsticks and the Sync button comes back.
+            FT.retry_count++;
+            if (FT.retry_count > FT_MAX_RETRIES)
+            {
+                Pop3Debug::trace("File transfer abandoned: host stopped responding");
+                memset(&FT.FileHeader, 0, sizeof(FT.FileHeader));
+                FT.FilePartsRecv.clear();
+                FT.peer_address.clear();
+                FT.peer_port = 0;
+                FT.retry_count = 0;
+                FT.total_parts = 0;
+                FT.Status = FileTransferStatus::Ready;
+                return;
+            }
             FT.LastContactTime = now;
             Send(FT.peer_address.c_str(), FT.peer_port,
                 Pop3NetworkTypes::HOST_REQUESTING_UPDATE_ON_TRANSFER);
