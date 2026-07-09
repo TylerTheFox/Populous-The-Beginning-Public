@@ -274,6 +274,7 @@ public:
     // erased on the network thread by the reaper / HOST_DELETE_PLAYER).
     void                                            GetPlayerNameCopy(UBYTE playernum, UNICODE_CHAR* out, size_t out_len);
     int                                             GetPlayerCount();
+    int                                             GetGamePlayerCount();   // real players only (ids < NETWORK_NUMBER_PLAYERS)
     bool                                            am_i_host() const;
     const NetworkStatus                             getStatus() const;
     const int                                       getRetries() const;

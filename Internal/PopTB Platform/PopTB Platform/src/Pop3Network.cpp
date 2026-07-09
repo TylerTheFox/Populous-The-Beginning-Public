@@ -215,6 +215,20 @@ void Pop3Network::GetPlayerNameCopy(UBYTE playernum, UNICODE_CHAR* out, size_t o
     }
 }
 
+// Real players only (ids inside the fixed game slots). Spectators are
+// routing-only peers and must not count towards "is anyone still playing"
+// decisions (e.g. the dedicated-server empty check).
+int Pop3Network::GetGamePlayerCount()
+{
+    Poco::Mutex::ScopedLock lock(players_mu);
+    int count = 0;
+    for (auto& player : players)
+        if (player.second.inUse == TRUE && player.second.uniquePlayerId >= 0
+            && player.second.uniquePlayerId < NETWORK_NUMBER_PLAYERS)
+            count++;
+    return count;
+}
+
 int Pop3Network::GetPlayerCount()
 {
     Poco::Mutex::ScopedLock lock(players_mu);
@@ -475,16 +489,31 @@ void Pop3Network::send_players(int to_id)
     memset(buf, 0, sizeof(buf));
     buf[0] = 0; // number of players
 
+    const int REC = 2 + (int)(sizeof(UNICODE_CHAR) * MAX_PLAYER_NAME_LEN);
     for (auto& player : players)
     {
         if (player.second.inUse)
         {
+            // Spectators (ids >= NETWORK_NUMBER_PLAYERS) are routing-only
+            // peers with an open-ended census - the roster carries the fixed
+            // game slots plus, for a joining spectator, its OWN record (how
+            // it learns its assigned id). Anything more overflows the
+            // receiver's fixed-size parse (join hang when the joiner's own
+            // record fell past the clamp).
+            if (player.second.uniquePlayerId >= NETWORK_NUMBER_PLAYERS
+                && player.second.uniquePlayerId != to_id)
+                continue;
+            if (p + REC > (int)sizeof(buf))
+            {
+                Pop3Debug::trace("send_players: roster truncated at %d records (buffer full)", (int)buf[0]);
+                break;
+            }
             buf[p + 0] = static_cast<char>(player.second.uniquePlayerId);
             //buf[p + 1] = player.dwFlags;
             buf[p + 1] = player.second.host;
             std::char_traits<UNICODE_CHAR>::copy(reinterpret_cast<UNICODE_CHAR *>(&buf[p + 2]), &player.second.name[0], MAX_PLAYER_NAME_LEN);
             buf[0]++;
-            p += 2 + sizeof(UNICODE_CHAR) * (MAX_PLAYER_NAME_LEN);
+            p += REC;
         }
     }
 
@@ -539,8 +568,9 @@ void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char *
     // receive buffer.
     const DWORD REC = static_cast<DWORD>(2 + sizeof(UNICODE_CHAR) * (MAX_PLAYER_NAME_LEN));
     int count = static_cast<unsigned char>(buffer[0]);
-    if (count > NETWORK_NUMBER_PLAYERS)
-        count = NETWORK_NUMBER_PLAYERS;
+    // Fixed game slots + (for a joining spectator) its own out-of-slot record.
+    if (count > NETWORK_NUMBER_PLAYERS + 1)
+        count = NETWORK_NUMBER_PLAYERS + 1;
     DWORD max_by_size = (payload_size - 1) / REC;
     if (static_cast<DWORD>(count) > max_by_size)
         count = static_cast<int>(max_by_size);
@@ -573,15 +603,41 @@ SWORD Pop3Network::add_player(const char * peer_address, UWORD peer_port, SWORD 
     // Don't add duplicate of player
     if (players.count(player_name))
     {
-        if (player_name == my_name)
+        // The map is keyed by NAME. Refreshing the stored endpoint is only
+        // legitimate when the record is the same peer (same endpoint) or has
+        // no live route yet ("UNK"/empty placeholder from roster records).
+        // A host must NOT let a DIFFERENT live endpoint claim an existing
+        // name: that redirected the original peer's route (incl. its
+        // SERVER_GAMETURN stream) to the newcomer - the original silently
+        // stalled out. Duplicate default profile names made this easy to hit
+        // with spectators. Reject the newcomer instead (it retries and the
+        // user must pick a distinct name).
+        POP3NETWORK_PLAYERINFO& existing = players[player_name];
+        const bool same_endpoint = (strncmp(existing.address, peer_address, MAX_ADDRESS) == 0)
+                                && (existing.port == peer_port);
+        const bool unroutable = (existing.address[0] == '\0')
+                             || (strcmp(existing.address, "UNK") == 0);
+        // A join may NEVER claim the host's row: the host self-adds with an
+        // empty address (satisfying `unroutable`), so without the host check
+        // a joiner using the host's name would hijack it and the resulting
+        // HOST_ADD_PLAYER echo would zero every client's stored host route.
+        if (am_host && existing.inUse
+            && (existing.host || (!same_endpoint && !unroutable)))
         {
-            player_num = players[player_name].uniquePlayerId;
+            Pop3Debug::trace("Join REJECTED: name '%ls' already connected from %s:%d (newcomer %s:%d) - duplicate names cannot share a session",
+                             player_name, existing.address, (int)existing.port, peer_address, (int)peer_port);
+            return -1;
         }
 
-        strncpy(players[player_name].address, peer_address, MAX_ADDRESS);
-        players[player_name].port = peer_port;
+        if (player_name == my_name)
+        {
+            player_num = existing.uniquePlayerId;
+        }
 
-        return players[player_name].uniquePlayerId;
+        strncpy(existing.address, peer_address, MAX_ADDRESS);
+        existing.port = peer_port;
+
+        return existing.uniquePlayerId;
     }
 
 
@@ -776,7 +832,7 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
             m_last_spectator_sweep_ms = now;
             std::vector<SWORD> stale;
             for (const auto& kv : m_spectator_last_contact)
-                if (now - kv.second >= 30000)   // 30s idle -> reap
+                if (now - kv.second >= 120000)  // 120s idle -> reap (long enough to ride out a level load, where the engine sends no heartbeats)
                     stale.push_back(kv.first);
             for (SWORD sid : stale)
             {
@@ -804,6 +860,18 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         break;
 
     case Pop3NetworkTypes::CLIENT_JOIN:
+        // Only the HOST admits peers, and only while joining is allowed. The
+        // second handshake step must honour allow_joiners too - a late/
+        // duplicated/crafted CLIENT_JOIN after game start would add a peer
+        // mid-game (no lockstep state transfer: guaranteed divergence). And a
+        // crafted CLIENT_JOIN aimed at a CLIENT would otherwise make it add a
+        // phantom entry and broadcast HOST_ADD_PLAYER to everyone.
+        if (!am_host || !allow_joiners)
+        {
+            Pop3Debug::trace("CLIENT_JOIN from %s:%d ignored (%s)", peer_address, (int)peer_port,
+                             am_host ? "joining disabled - game started" : "not the host");
+            break;
+        }
         player_number = /*(buffer[2] == 255) ? -1 :*/ buffer[2];
         is_host = buffer[3] > 0;
         from_id = add_player(peer_address, peer_port, player_number, is_host, reinterpret_cast<UNICODE_CHAR*>(&buffer[4]));
@@ -851,6 +919,12 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         break;
 
     case Pop3NetworkTypes::HOST_ADD_PLAYER:
+        // Only the host defines the roster (mirror of the HOST_PLAYERS spoof
+        // guard): the host processing a reflected/crafted HOST_ADD_PLAYER
+        // would run its slot assignment and park a phantom player in a free
+        // slot, stalling its check-in loop.
+        if (am_host)
+            break;
         if (from_id < 0) return;
         player_number = /*(buffer[2] == 255) ? -1 :*/ buffer[2];
         is_host = buffer[3] > 0;
