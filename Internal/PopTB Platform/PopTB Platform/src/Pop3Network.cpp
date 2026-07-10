@@ -963,11 +963,15 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         break;
 
     case Pop3NetworkTypes::HOST_ACCEPT_JOIN:
+        if (am_host)
+            break;
         player_num = DATA_NOT_SET;
         SendMyInfo(peer_address, peer_port);
         break;
 
     case Pop3NetworkTypes::HOST_DENY_JOIN:
+        if (am_host)
+            break;
         server_status = Pop3ErrorStatusCodes::BAD_VERSION;
         break;
 
