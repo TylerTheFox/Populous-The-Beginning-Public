@@ -10,9 +10,40 @@
 #include    <fstream>
 #include  <Poco/Path.h>
 #include  <Poco/Net/IPAddress.h>
+#include  <Poco/SHA1Engine.h>
+#include  <Poco/RandomStream.h>
+#include  <cstring>
 
 const std::string Pop3Network::tribes[] = { "Blue", "Red", "Yellow", "Green", "Cyan", "Pink", "Black", "Orange", "Neutral", "Spectator" };
 extern ULONGLONG getGameClockMiliseconds();
+
+// --- lobby password helpers (P2, 2026-07-12) -------------------------------
+// SHA1(nonce || raw-password-bytes). Both peers are the same build (join is
+// version-gated) and both are Windows wchar_t (2 bytes), so the raw byte view
+// of the UNICODE password is identical host- and client-side. Network-thread
+// only; never runs in the sim tick, so the non-crypto-grade choice and the
+// use of a hash here have no determinism implication.
+void Pop3Network::compute_pw_hash(const uint8_t* nonce, size_t nonce_len,
+                                  const UNICODE_CHAR* password, uint8_t* out)
+{
+    Poco::SHA1Engine sha;
+    sha.update(nonce, nonce_len);
+    if (password && password[0])
+    {
+        size_t chars = 0;
+        while (password[chars] && chars < POP3NETWORK_MAX_PASSWORD_LENGTH) chars++;
+        sha.update(password, chars * sizeof(UNICODE_CHAR));
+    }
+    const Poco::DigestEngine::Digest& d = sha.digest();
+    // SHA1 is 20 bytes == POP3NETWORK_PW_HASH_LEN
+    for (size_t i = 0; i < POP3NETWORK_PW_HASH_LEN && i < d.size(); i++)
+        out[i] = d[i];
+}
+
+bool Pop3Network::password_required() const
+{
+    return GamePtrs.Password != nullptr && GamePtrs.Password[0] != 0;
+}
 #define		EXCEED(number,lex,hex)		if (number < lex) number=lex; if (number > hex) number=hex
 #define		UEXCEED(number,hex)		    if (number > hex) number=hex
 
@@ -75,6 +106,8 @@ Pop3ErrorStatusCodes Pop3Network::AreWeLobbied(NetworkDataCallbackProc theCallba
 
     /// Network code. ///
     player_num = DATA_NOT_SET;
+    m_join_deny_reason.store(-1);   // fresh attempt: clear any prior password/version deny (-1 = none)
+    m_join_pw_pending = false;
     if (start_mode == SM_HOSTING && *GamePtrs.RequestedPlayerNum == 255) *GamePtrs.RequestedPlayerNum = 0;
     ProcessPopData = theCallback;
     this->ServerInit(start_mode);
@@ -547,13 +580,47 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
     if (allow_joiners && /*(pn == DATA_NOT_SET || allowed_pn) &&*/
         (buffer[0] == MAJOR_VERSION && buffer[1] == MINOR_VERSION && version.s == BUILD_NUMBER))
     {
-        Pop3Debug::trace("NET_HOST_ACCEPT_JOIN");
-        Send(peer_address, peer_port, Pop3NetworkTypes::HOST_ACCEPT_JOIN);
+        // Accept the version; if this lobby is password-protected, issue a
+        // random per-join nonce the client must prove knowledge against in
+        // CLIENT_JOIN. Payload: [pw_flag][nonce...]. No password -> flag 0.
+        char accept[1 + POP3NETWORK_PW_NONCE_LEN];
+        DWORD accept_len = 1;
+        if (password_required())
+        {
+            const std::string key = std::string(peer_address) + ":" + std::to_string(peer_port);
+            std::array<uint8_t, POP3NETWORK_PW_NONCE_LEN> nonce{};
+            Poco::RandomInputStream ris;
+            ris.read(reinterpret_cast<char*>(nonce.data()), nonce.size());
+
+            // evict expired / over-cap nonces before inserting (anti-DoS)
+            const ULONGLONG now = GetCurrentMs();
+            for (auto it = m_join_nonces.begin(); it != m_join_nonces.end(); )
+            {
+                if (now - it->second.second > POP3NETWORK_PW_NONCE_TTL_MS)
+                    it = m_join_nonces.erase(it);
+                else
+                    ++it;
+            }
+            if (m_join_nonces.size() >= POP3NETWORK_PW_MAX_NONCES)
+                m_join_nonces.clear();
+            m_join_nonces[key] = { nonce, now };
+
+            accept[0] = 1;
+            memcpy(&accept[1], nonce.data(), nonce.size());
+            accept_len = 1 + POP3NETWORK_PW_NONCE_LEN;
+        }
+        else
+        {
+            accept[0] = 0;
+        }
+        Pop3Debug::trace("NET_HOST_ACCEPT_JOIN%s", password_required() ? " (password challenge)" : "");
+        Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_ACCEPT_JOIN, accept, accept_len);
     }
     else
     {
-        Pop3Debug::trace("NET_HOST_DENY_JOIN");
-        Send(peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN);
+        Pop3Debug::trace("NET_HOST_DENY_JOIN (version)");
+        const char reason = POP3NETWORK_DENY_VERSION;
+        Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
     }
 }
 
@@ -632,7 +699,17 @@ void Pop3Network::SendMyInfo(const char * peer_address, UWORD peer_port) const
     // recognize ourselves by exact name match.
     const size_t name_len = std::min<size_t>(my_name.size(), MAX_PLAYER_NAME_LEN - 1);
     std::char_traits<UNICODE_CHAR>::copy(reinterpret_cast<UNICODE_CHAR *>(&buf[2]), my_name.c_str(), name_len);
-    Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, static_cast<DWORD>(2 + sizeof(UNICODE_CHAR) * (name_len + 1)));
+    DWORD len = static_cast<DWORD>(2 + sizeof(UNICODE_CHAR) * (name_len + 1));
+    // Password proof (if the host issued a nonce in HOST_ACCEPT_JOIN): append
+    // SHA1(nonce || password) after the name's terminator. The host reads it
+    // from the tail (buf_size - PW_HASH_LEN); add_player parses the name as a
+    // null-terminated string, so the appended digest never corrupts it.
+    if (m_join_pw_pending && len + POP3NETWORK_PW_HASH_LEN <= MAX_PACKET_SIZE)
+    {
+        memcpy(&buf[len], m_join_pw_hash.data(), POP3NETWORK_PW_HASH_LEN);
+        len += POP3NETWORK_PW_HASH_LEN;
+    }
+    Send(player_num, peer_address, peer_port, Pop3NetworkTypes::CLIENT_JOIN, buf, len);
 }
 
 void Pop3Network::add_players(const char * peer_address, UWORD peer_port, char * buffer, DWORD payload_size)
@@ -949,6 +1026,33 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
                              am_host ? "joining disabled - game started" : "not the host");
             break;
         }
+        // Password gate: the client appended SHA1(nonce || password) at the
+        // tail of CLIENT_JOIN. Recompute against the nonce we issued this
+        // peer in HOST_ACCEPT_JOIN and reject a mismatch BEFORE add_player,
+        // so a wrong/absent password never enters the roster or the sim.
+        if (password_required())
+        {
+            const std::string key = std::string(peer_address) + ":" + std::to_string(peer_port);
+            auto it = m_join_nonces.find(key);
+            bool ok = false;
+            if (it != m_join_nonces.end() && buf_size >= 2 + POP3NETWORK_PW_HASH_LEN)
+            {
+                uint8_t expect[POP3NETWORK_PW_HASH_LEN];
+                compute_pw_hash(it->second.first.data(), POP3NETWORK_PW_NONCE_LEN,
+                                GamePtrs.Password, expect);
+                const uint8_t* got = reinterpret_cast<const uint8_t*>(&buffer[buf_size - POP3NETWORK_PW_HASH_LEN]);
+                ok = (memcmp(expect, got, POP3NETWORK_PW_HASH_LEN) == 0);
+            }
+            if (it != m_join_nonces.end())
+                m_join_nonces.erase(it);   // single-use nonce
+            if (!ok)
+            {
+                Pop3Debug::trace("CLIENT_JOIN from %s:%d DENIED - wrong password", peer_address, (int)peer_port);
+                const char reason = POP3NETWORK_DENY_PASSWORD;
+                Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+                break;
+            }
+        }
         player_number = /*(buffer[2] == 255) ? -1 :*/ buffer[2];
         is_host = buffer[3] > 0;
         from_id = add_player(peer_address, peer_port, player_number, is_host, reinterpret_cast<UNICODE_CHAR*>(&buffer[4]));
@@ -964,12 +1068,27 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
 
     case Pop3NetworkTypes::HOST_ACCEPT_JOIN:
         player_num = DATA_NOT_SET;
+        // If the host attached a password challenge ([1][nonce]), hash the
+        // nonce with our configured password now; SendMyInfo appends it.
+        m_join_pw_pending = false;
+        if (buf_size >= 3 && buffer[2] == 1 && buf_size >= 3 + POP3NETWORK_PW_NONCE_LEN)
+        {
+            compute_pw_hash(reinterpret_cast<const uint8_t*>(&buffer[3]),
+                            POP3NETWORK_PW_NONCE_LEN, GamePtrs.Password, m_join_pw_hash.data());
+            m_join_pw_pending = true;
+        }
         SendMyInfo(peer_address, peer_port);
         break;
 
     case Pop3NetworkTypes::HOST_DENY_JOIN:
-        server_status = Pop3ErrorStatusCodes::BAD_VERSION;
+    {
+        const int reason = (buf_size >= 3) ? static_cast<unsigned char>(buffer[2]) : POP3NETWORK_DENY_VERSION;
+        m_join_deny_reason.store(reason == POP3NETWORK_DENY_PASSWORD ? POP3NETWORK_DENY_PASSWORD : POP3NETWORK_DENY_VERSION);
+        server_status = (reason == POP3NETWORK_DENY_PASSWORD)
+            ? Pop3ErrorStatusCodes::BAD_PASSWORD : Pop3ErrorStatusCodes::BAD_VERSION;
+        Pop3Debug::trace("NET_HOST_DENY_JOIN reason=%s", reason == POP3NETWORK_DENY_PASSWORD ? "password" : "version");
         break;
+    }
 
     case Pop3NetworkTypes::HOST_PLAYERS:
         // Only the host defines the player list; a client processing a spoofed

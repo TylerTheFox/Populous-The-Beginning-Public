@@ -11,6 +11,8 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <array>
+#include <cstdint>
 
 extern Poco::Mutex packet_info_mu;
 
@@ -22,7 +24,19 @@ typedef void (NET_CALLBACK *NetworkLobbyApplicationsCallback)(void* dataPtr, voi
 typedef void (NET_CALLBACK *NetworkMediumCallback)(UNICODE_CHAR* medium, void* param);
 typedef void (NET_CALLBACK *NetworkPingCallback)(WORD id, WORD seq, DWORD rondtriptime, void* param);
 
-#define POP3NETWORK_MAX_PASSWORD_LENGTH     (1)   // lol
+// Lobby password. Persisted in gnsi.SafeNet.Password (net.cfg); the transport
+// never sends the password in clear. The host issues a per-join random nonce
+// in HOST_ACCEPT_JOIN and the client returns SHA1(nonce || password) appended
+// to CLIENT_JOIN; the host recomputes and compares. See check_join_request /
+// SendMyInfo / the CLIENT_JOIN handler (2026-07-12 P2).
+#define POP3NETWORK_MAX_PASSWORD_LENGTH     (32)
+#define POP3NETWORK_PW_NONCE_LEN            (8)    // random challenge bytes
+#define POP3NETWORK_PW_HASH_LEN            (20)    // SHA-1 digest length
+#define POP3NETWORK_PW_NONCE_TTL_MS      (30000)   // issued-nonce lifetime
+#define POP3NETWORK_PW_MAX_NONCES          (64)    // cap the pending-nonce map (anti-DoS)
+// HOST_DENY_JOIN reason byte (payload[0])
+#define POP3NETWORK_DENY_VERSION            (0)
+#define POP3NETWORK_DENY_PASSWORD           (1)
 #define	POP3NETWORK_MAX_SESSION_NAME_LENGTH (64)
 #define	POP3NETWORK_MAX_PLAYER_NAME_LENGTH  (32)
 #define	NET_ALLPLAYERS						(0xffffffff)
@@ -74,6 +88,7 @@ enum class Pop3ErrorStatusCodes
     JOINED,
     TIMEOUT,
     BAD_VERSION,
+    BAD_PASSWORD,
     BAD_NAME,
     NET_INIT,
     NET_SOCKET,
@@ -111,6 +126,7 @@ struct POP3NETWORK_GAMEDATA
     UNICODE_CHAR*   name;
     UWORD*          RemotePort;
     UWORD*          LocalPort;
+    UNICODE_CHAR*   Password;   // lobby password (may be null / empty = open)
     SWORD*          PingTime;
     SWORD*          StartLevelNumber;
     SWORD*          NumPeopleOfType;
@@ -291,6 +307,10 @@ public:
     int                                             GetGamePlayerCount();   // real players only (ids < NETWORK_NUMBER_PLAYERS)
     bool                                            am_i_host() const;
     const NetworkStatus                             getStatus() const;
+    // Last join-deny reason: -1 = none, else POP3NETWORK_DENY_*. Sticky across
+    // the watchdog's server_status resets so the lobby UI can show "wrong
+    // password" rather than a generic timeout.
+    int                                             getJoinDenyReason() const { return m_join_deny_reason.load(); }
     const int                                       getRetries() const;
     const std::list<class PacketInfo> &             getPacketInfo();
     static const std::string                        tribes[];
@@ -328,6 +348,23 @@ protected:
     std::thread                                     m_host_watchdog;
     std::thread                                     m_join_watchdog;
     bool                                            m_join_first_time = true;
+
+    // --- lobby password (P2) - all touched only on the network thread -------
+    // HOST: nonces issued to joining peers, keyed "addr:port" -> (nonce, ms).
+    // Const check_join_request inserts here, hence mutable.
+    mutable std::map<std::string, std::pair<std::array<uint8_t, POP3NETWORK_PW_NONCE_LEN>, ULONGLONG>> m_join_nonces;
+    // CLIENT: hash to append to CLIENT_JOIN once the host's nonce arrived.
+    std::array<uint8_t, POP3NETWORK_PW_HASH_LEN>    m_join_pw_hash{};
+    bool                                            m_join_pw_pending = false;
+    // CLIENT: sticky last-deny reason, cleared to -1 per join attempt in
+    // AreWeLobbied; the watchdog resets server_status so the UI reads this
+    // instead. -1 = none, else POP3NETWORK_DENY_* (0 = version, so -1 keeps
+    // "not denied" distinct from a version deny).
+    std::atomic<int>                                m_join_deny_reason{ -1 };
+
+    bool                                            password_required() const;
+    static void                                     compute_pw_hash(const uint8_t* nonce, size_t nonce_len,
+                                                                    const UNICODE_CHAR* password, uint8_t* out /*[POP3NETWORK_PW_HASH_LEN]*/);
 
     void                                            ParsePacket(char* buffer, DWORD buf_size, const char* peer_address, UWORD peer_port);
     SWORD                                           add_player(const char* peer_address, UWORD peer_port, SWORD player_number, bool is_host, UNICODE_CHAR* player_name);
