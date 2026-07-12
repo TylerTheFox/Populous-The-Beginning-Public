@@ -79,6 +79,13 @@ enum Pop3LobbyMsg : uint8_t
     // (lobby frames from the host are never forwarded to joiners).
     LOBBY_HOST_PUNCH         = 0x49,  // lobby port -> host (Pop3LobbyHostPunchV1)
     LOBBY_PUNCH_ACK          = 0x4A,  // host game socket -> per-joiner server port
+    // Host migration (5b): a surviving joiner claims the vacated host role.
+    // Accepted only when the old host leg has gone silent (or the host sent
+    // LOBBY_CLOSE) - the client-side deterministic election guarantees a
+    // single claimer, so the server just follows it. On accept the claimer
+    // becomes the new host anchor and gets a fresh host key.
+    LOBBY_CLAIM_HOST         = 0x4B,  // surviving joiner game socket -> LOBBY port (Pop3LobbyClaimHostV1)
+    LOBBY_CLAIM_HOST_RESP    = 0x4C,  // lobby port -> claimer (Pop3LobbyClaimHostRespV1)
 
     DIR_SYNC                 = 0x50,  // server <-> server federation lobby-table exchange (build step 4)
 };
@@ -178,6 +185,19 @@ struct Pop3LobbyHostPunchV1
     uint16_t JoinerServerPort;   // per-joiner proxy port the host must punch
 };
 
+struct Pop3LobbyClaimHostV1
+{
+    uint8_t ProtocolVersion;
+    uint8_t Reserved;
+};
+
+struct Pop3LobbyClaimHostRespV1
+{
+    uint8_t Result;   // LOBBY_OK | LOBBY_ERR_BAD_REQUEST (host still live / claimer not a joiner)
+    uint8_t Reserved;
+    uint8_t HostKey[POP3LOBBY_HOST_KEY_LEN];   // fresh key for the new host (valid on LOBBY_OK)
+};
+
 // LOBBY_LIST_RESP header; Count records follow immediately. Responses are
 // paginated (POP3LOBBY_LIST_RECORDS_PER_DATAGRAM) to stay under a typical
 // 1500-byte MTU - one request may produce several datagrams; a client
@@ -221,5 +241,7 @@ static_assert(sizeof(Pop3LobbyHostRegisterV1) == 18, "host register v1 layout");
 static_assert(sizeof(Pop3LobbyHostRegisterRespV1) == 2, "host register resp v1 layout");
 static_assert(sizeof(Pop3LobbyCloseV1) == 18, "close v1 layout");
 static_assert(sizeof(Pop3LobbyHostPunchV1) == 4, "host punch v1 layout");
+static_assert(sizeof(Pop3LobbyClaimHostV1) == 2, "claim host v1 layout");
+static_assert(sizeof(Pop3LobbyClaimHostRespV1) == 18, "claim host resp v1 layout");
 static_assert(sizeof(Pop3LobbyListRespV1) == 8, "list resp v1 layout");
 static_assert(sizeof(Pop3LobbyRecordV1) == 214 && offsetof(Pop3LobbyRecordV1, OriginHost) == 145, "lobby record v1 layout");
