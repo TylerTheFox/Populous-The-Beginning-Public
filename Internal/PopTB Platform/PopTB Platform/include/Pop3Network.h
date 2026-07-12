@@ -1,6 +1,7 @@
 #pragma once
 #include "../../../../Pop3.h"
 #include "Pop3Types.h"
+#include "Pop3LobbyProtocol.h"
 #include <list>
 #include <functional>
 #include <memory>
@@ -37,6 +38,7 @@ typedef void (NET_CALLBACK *NetworkPingCallback)(WORD id, WORD seq, DWORD rondtr
 // HOST_DENY_JOIN reason byte (payload[0])
 #define POP3NETWORK_DENY_VERSION            (0)
 #define POP3NETWORK_DENY_PASSWORD           (1)
+#define POP3NETWORK_DENY_FULL               (2)   // lobby size cap reached (3c; spectators exempt)
 #define	POP3NETWORK_MAX_SESSION_NAME_LENGTH (64)
 #define	POP3NETWORK_MAX_PLAYER_NAME_LENGTH  (32)
 #define	NET_ALLPLAYERS						(0xffffffff)
@@ -145,6 +147,9 @@ struct POP3NETWORK_GAMEDATA
     UBYTE*          GameMode;
     ULONG*          NetMyPlayerNumber;
     UBYTE*          NetLobbied;
+    // Lobby size cap (2-8) chosen at create time; 0 = uncapped (all 8 game
+    // slots). Enforced host-side in check_join_request; spectators exempt.
+    UBYTE           MaxPlayers;
     std::function<void(void)>   FileTransfer_Callback;
 };
 
@@ -315,6 +320,20 @@ public:
     const std::list<class PacketInfo> &             getPacketInfo();
     static const std::string                        tribes[];
 
+    // --- Mode A lobby-server registration (3c) ------------------------------
+    // Arms periodic LOBBY_HOST_REGISTER keepalives from the GAME socket to the
+    // per-lobby proxy port (NAT-safe host association - the LobbySession
+    // records the datagram's source as the host endpoint) and a key-gated
+    // LOBBY_CLOSE at teardown. MUST be called after construction and BEFORE
+    // AreWeLobbied() starts the receive thread - the fields are read from
+    // that thread with no lock.
+    void                                            SetLobbyRegistration(const char* lobbyHost, UWORD lobbyPort,
+                                                                         const uint8_t* hostKey /*[POP3LOBBY_HOST_KEY_LEN]*/);
+    // RTT to the lobby relay, measured on every keepalive/REGISTER_RESP pair
+    // (~10s cadence). -1 until the first response. In a proxied game this IS
+    // the host's real latency - its loopback "1ms" ping is a lie to everyone.
+    int                                             getLobbyServerPingMs() const { return m_lobby_ping_ms.load(); }
+
     void                                            transfer_file(DWORD to, const std::string & file_name, const char * data, size_t length);
     FileTransferStatus                              getFileTransferStatus();
     // Percent is side-aware: receiving side = parts received / total; sending
@@ -365,6 +384,17 @@ protected:
     bool                                            password_required() const;
     static void                                     compute_pw_hash(const uint8_t* nonce, size_t nonce_len,
                                                                     const UNICODE_CHAR* password, uint8_t* out /*[POP3NETWORK_PW_HASH_LEN]*/);
+
+    // --- Mode A lobby-server registration (3c) - written once on the main
+    // thread before the receive thread exists, then read only by that thread
+    // (keepalive tick) and the destructor (close frame, after thread join).
+    bool                                            m_lobbyreg_armed = false;
+    char                                            m_lobbyreg_host[MAX_ADDRESS] = {};
+    UWORD                                           m_lobbyreg_port = 0;
+    uint8_t                                         m_lobbyreg_key[POP3LOBBY_HOST_KEY_LEN] = {};
+    ULONGLONG                                       m_lobbyreg_last_ms = 0;
+    ULONGLONG                                       m_lobbyreg_sent_ms = 0;      // network thread only
+    std::atomic<int>                                m_lobby_ping_ms{ -1 };       // read by game threads
 
     void                                            ParsePacket(char* buffer, DWORD buf_size, const char* peer_address, UWORD peer_port);
     SWORD                                           add_player(const char* peer_address, UWORD peer_port, SWORD player_number, bool is_host, UNICODE_CHAR* player_name);

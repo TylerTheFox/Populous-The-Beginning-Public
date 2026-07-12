@@ -44,6 +44,19 @@ bool Pop3Network::password_required() const
 {
     return GamePtrs.Password != nullptr && GamePtrs.Password[0] != 0;
 }
+
+// --- Mode A lobby-server registration (3c) ----------------------------------
+void Pop3Network::SetLobbyRegistration(const char* lobbyHost, UWORD lobbyPort, const uint8_t* hostKey)
+{
+    if (!lobbyHost || !lobbyHost[0] || !lobbyPort || !hostKey)
+        return;
+    strncpy_s(m_lobbyreg_host, lobbyHost, MAX_ADDRESS - 1);
+    m_lobbyreg_port = lobbyPort;
+    memcpy(m_lobbyreg_key, hostKey, POP3LOBBY_HOST_KEY_LEN);
+    m_lobbyreg_last_ms = 0;   // first keepalive fires immediately
+    m_lobbyreg_armed = true;
+    Pop3Debug::trace("Lobby registration armed -> %s:%d", m_lobbyreg_host, (int)m_lobbyreg_port);
+}
 #define		EXCEED(number,lex,hex)		if (number < lex) number=lex; if (number > hex) number=hex
 #define		UEXCEED(number,hex)		    if (number > hex) number=hex
 
@@ -577,6 +590,25 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
         }
     }
 
+    // Lobby size cap (3c): deny non-spectator joins once the chosen game-seat
+    // count is reached. Spectators (slot SPECTATOR_SLOT) are exempt - they
+    // never occupy a game seat. 0 = uncapped (legacy: all 8 slots).
+    if (GamePtrs.MaxPlayers > 0 && pn != SPECTATOR_SLOT)
+    {
+        int seats = 0;
+        for (auto& p : players)
+            if (p.second.inUse && p.second.uniquePlayerId >= 0
+                && p.second.uniquePlayerId < GAME_NUMBER_PLAYERS)
+                seats++;
+        if (seats >= GamePtrs.MaxPlayers)
+        {
+            Pop3Debug::trace("NET_HOST_DENY_JOIN (full: %d/%d)", seats, (int)GamePtrs.MaxPlayers);
+            const char reason = POP3NETWORK_DENY_FULL;
+            Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+            return;
+        }
+    }
+
     if (allow_joiners && /*(pn == DATA_NOT_SET || allowed_pn) &&*/
         (buffer[0] == MAJOR_VERSION && buffer[1] == MINOR_VERSION && version.s == BUILD_NUMBER))
     {
@@ -1055,6 +1087,29 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         }
         player_number = /*(buffer[2] == 255) ? -1 :*/ buffer[2];
         is_host = buffer[3] > 0;
+        // Lobby-size gate, AUTHORITATIVE copy: check_join_request's deny is
+        // advisory (a crafted client can skip straight to CLIENT_JOIN, and
+        // two accepted requests can race past the last seat). Re-count here,
+        // at the admission point, before add_player. Spectators exempt.
+        if (GamePtrs.MaxPlayers > 0 && player_number != SPECTATOR_SLOT)
+        {
+            int seats = 0;
+            {
+                Poco::Mutex::ScopedLock lock(players_mu);
+                for (auto& p : players)
+                    if (p.second.inUse && p.second.uniquePlayerId >= 0
+                        && p.second.uniquePlayerId < GAME_NUMBER_PLAYERS)
+                        seats++;
+            }
+            if (seats >= GamePtrs.MaxPlayers)
+            {
+                Pop3Debug::trace("CLIENT_JOIN from %s:%d DENIED - lobby full (%d/%d)",
+                                 peer_address, (int)peer_port, seats, (int)GamePtrs.MaxPlayers);
+                const char reason = POP3NETWORK_DENY_FULL;
+                Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+                break;
+            }
+        }
         from_id = add_player(peer_address, peer_port, player_number, is_host, reinterpret_cast<UNICODE_CHAR*>(&buffer[4]));
         send_players(from_id);
         send_add_player(from_id);
@@ -1082,11 +1137,17 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
 
     case Pop3NetworkTypes::HOST_DENY_JOIN:
     {
-        const int reason = (buf_size >= 3) ? static_cast<unsigned char>(buffer[2]) : POP3NETWORK_DENY_VERSION;
-        m_join_deny_reason.store(reason == POP3NETWORK_DENY_PASSWORD ? POP3NETWORK_DENY_PASSWORD : POP3NETWORK_DENY_VERSION);
-        server_status = (reason == POP3NETWORK_DENY_PASSWORD)
-            ? Pop3ErrorStatusCodes::BAD_PASSWORD : Pop3ErrorStatusCodes::BAD_VERSION;
-        Pop3Debug::trace("NET_HOST_DENY_JOIN reason=%s", reason == POP3NETWORK_DENY_PASSWORD ? "password" : "version");
+        const int raw = (buf_size >= 3) ? static_cast<unsigned char>(buffer[2]) : POP3NETWORK_DENY_VERSION;
+        // Unknown future reasons collapse to version (the generic "can't join
+        // this host" bucket) rather than passing arbitrary bytes to the UI.
+        const int reason = (raw == POP3NETWORK_DENY_PASSWORD || raw == POP3NETWORK_DENY_FULL)
+            ? raw : POP3NETWORK_DENY_VERSION;
+        m_join_deny_reason.store(reason);
+        server_status = (reason == POP3NETWORK_DENY_PASSWORD) ? Pop3ErrorStatusCodes::BAD_PASSWORD
+                      : Pop3ErrorStatusCodes::BAD_VERSION;
+        Pop3Debug::trace("NET_HOST_DENY_JOIN reason=%s",
+                         reason == POP3NETWORK_DENY_PASSWORD ? "password"
+                       : reason == POP3NETWORK_DENY_FULL ? "lobby full" : "version");
         break;
     }
 

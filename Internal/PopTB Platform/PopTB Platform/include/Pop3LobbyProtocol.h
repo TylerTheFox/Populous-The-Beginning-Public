@@ -70,6 +70,15 @@ enum Pop3LobbyMsg : uint8_t
     LOBBY_HOST_REGISTER      = 0x46,  // host game socket -> LOBBY port; NAT-safe host association + keepalive
     LOBBY_HOST_REGISTER_RESP = 0x47,  // lobby port -> host
     LOBBY_CLOSE              = 0x48,  // host game socket -> LOBBY port; key-gated teardown
+    // NAT punch for port-restricted host NATs (incl. router hairpin): the
+    // proxy's per-joiner sockets have different source ports than the lobby
+    // port, so the host's NAT drops them until the host sends one datagram
+    // toward each. PUNCH travels on the established lobby-port flow; the
+    // host replies with PUNCH_ACK from its game socket to the named
+    // per-joiner server port, opening the mapping. The proxy consumes ACKs
+    // (lobby frames from the host are never forwarded to joiners).
+    LOBBY_HOST_PUNCH         = 0x49,  // lobby port -> host (Pop3LobbyHostPunchV1)
+    LOBBY_PUNCH_ACK          = 0x4A,  // host game socket -> per-joiner server port
 
     DIR_SYNC                 = 0x50,  // server <-> server federation lobby-table exchange (build step 4)
 };
@@ -162,6 +171,13 @@ struct Pop3LobbyCloseV1
     uint8_t HostKey[POP3LOBBY_HOST_KEY_LEN];
 };
 
+struct Pop3LobbyHostPunchV1
+{
+    uint8_t  ProtocolVersion;
+    uint8_t  Reserved;
+    uint16_t JoinerServerPort;   // per-joiner proxy port the host must punch
+};
+
 // LOBBY_LIST_RESP header; Count records follow immediately. Responses are
 // paginated (POP3LOBBY_LIST_RECORDS_PER_DATAGRAM) to stay under a typical
 // 1500-byte MTU - one request may produce several datagrams; a client
@@ -204,5 +220,6 @@ static_assert(sizeof(Pop3LobbyJoinRespV1) == 10, "join resp v1 layout");
 static_assert(sizeof(Pop3LobbyHostRegisterV1) == 18, "host register v1 layout");
 static_assert(sizeof(Pop3LobbyHostRegisterRespV1) == 2, "host register resp v1 layout");
 static_assert(sizeof(Pop3LobbyCloseV1) == 18, "close v1 layout");
+static_assert(sizeof(Pop3LobbyHostPunchV1) == 4, "host punch v1 layout");
 static_assert(sizeof(Pop3LobbyListRespV1) == 8, "list resp v1 layout");
 static_assert(sizeof(Pop3LobbyRecordV1) == 214 && offsetof(Pop3LobbyRecordV1, OriginHost) == 145, "lobby record v1 layout");

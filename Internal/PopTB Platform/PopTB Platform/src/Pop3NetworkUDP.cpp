@@ -32,6 +32,99 @@ Pop3NetworkUDP::~Pop3NetworkUDP()
         delete _thread;
         _thread = nullptr;
     }
+
+    // Key-gated LOBBY_CLOSE so the lobby server reaps this lobby immediately
+    // instead of waiting out the idle timeout. After the thread join, so the
+    // socket is used from exactly one thread here.
+    if (m_lobbyreg_armed)
+    {
+        m_lobbyreg_armed = false;
+        unsigned char frame[2 + sizeof(Pop3LobbyCloseV1)];
+        frame[0] = POP3LOBBY_PACKET_TYPE;
+        frame[1] = LOBBY_CLOSE;
+        Pop3LobbyCloseV1 close_msg{};
+        close_msg.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
+        memcpy(close_msg.HostKey, m_lobbyreg_key, POP3LOBBY_HOST_KEY_LEN);
+        memcpy(frame + 2, &close_msg, sizeof(close_msg));
+        try
+        {
+            dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port));
+            Pop3Debug::trace("LOBBY_CLOSE sent to %s:%d", m_lobbyreg_host, (int)m_lobbyreg_port);
+        }
+        catch (const Poco::Exception&)
+        {
+        }
+    }
+}
+
+// LOBBY_HOST_PUNCH from our lobby session: send one datagram from the game
+// socket to the named per-joiner proxy port so a port-restricted NAT (incl.
+// router hairpin) opens toward that leg. Only obeyed while registration is
+// armed and only from the session's own endpoint - nobody else gets to make
+// this socket emit datagrams at arbitrary targets.
+void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::Net::SocketAddress& sender)
+{
+    if (!m_lobbyreg_armed)
+        return;
+    const unsigned char msg = static_cast<unsigned char>(buf[1]);
+    try
+    {
+        if (sender != Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port))
+            return;
+
+        // The keepalive's RESP doubles as a ping probe: RTT to the relay is
+        // the host's real latency in a proxied game (see getLobbyServerPingMs).
+        if (msg == LOBBY_HOST_REGISTER_RESP)
+        {
+            if (m_lobbyreg_sent_ms)
+                m_lobby_ping_ms.store(static_cast<int>(GetCurrentMs() - m_lobbyreg_sent_ms));
+            return;
+        }
+
+        if (msg != LOBBY_HOST_PUNCH || len < 2 + sizeof(Pop3LobbyHostPunchV1))
+            return;
+        Pop3LobbyHostPunchV1 punch;
+        memcpy(&punch, buf + 2, sizeof(punch));
+        if (punch.ProtocolVersion != POP3LOBBY_PROTOCOL_VERSION || punch.JoinerServerPort == 0)
+            return;
+        const unsigned char ack[2] = { POP3LOBBY_PACKET_TYPE, LOBBY_PUNCH_ACK };
+        dgs.sendTo(ack, sizeof(ack), Poco::Net::SocketAddress(m_lobbyreg_host, punch.JoinerServerPort));
+        Pop3Debug::trace("Lobby NAT punch -> %s:%d", m_lobbyreg_host, (int)punch.JoinerServerPort);
+    }
+    catch (const Poco::Exception&)
+    {
+    }
+}
+
+// Periodic LOBBY_HOST_REGISTER keepalive from the GAME socket (3c): the
+// LobbySession records this datagram's source as the host endpoint (NAT-safe)
+// and refreshes its idle timers. Fire-and-forget - the RESP arrives on this
+// socket and is dropped by the frame filter (first byte 11 != POP_PACKET_TYPE),
+// which is fine; the next keepalive re-registers regardless.
+void Pop3NetworkUDP::lobby_registration_tick()
+{
+    if (!m_lobbyreg_armed || !am_host)
+        return;
+    const ULONGLONG now = GetCurrentMs();
+    if (m_lobbyreg_last_ms && now - m_lobbyreg_last_ms < 10000)
+        return;
+    m_lobbyreg_last_ms = now;
+    m_lobbyreg_sent_ms = now;   // RESP arrival - this = relay RTT
+
+    unsigned char frame[2 + sizeof(Pop3LobbyHostRegisterV1)];
+    frame[0] = POP3LOBBY_PACKET_TYPE;
+    frame[1] = LOBBY_HOST_REGISTER;
+    Pop3LobbyHostRegisterV1 reg{};
+    reg.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
+    memcpy(reg.HostKey, m_lobbyreg_key, POP3LOBBY_HOST_KEY_LEN);
+    memcpy(frame + 2, &reg, sizeof(reg));
+    try
+    {
+        dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port));
+    }
+    catch (const Poco::Exception&)
+    {
+    }
 }
 
 void Pop3NetworkUDP::ServerInit(UBYTE mode)
@@ -104,21 +197,33 @@ void Pop3NetworkUDP::RunServer()
                 if (!dgs.poll(Poco::Timespan(0, 100000), Poco::Net::Socket::SELECT_READ))
                 {
                     filetransfer_tick();
+                    lobby_registration_tick();
                     continue;
                 }
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
                 if (((*GamePtrs.GnsiFlags & GNS_QUITTING) && Pop3App::isQuitting()) || m_shutdown.load())
                     return;
 
-                if (first_connection)
+                if (recv_len >= 2 && static_cast<unsigned char>(buf[0]) == POP3LOBBY_PACKET_TYPE)
                 {
-                    SendPointers(sender.host().toString().c_str(), sender.port());
-                    first_connection = false;
+                    // Lobby-server control frames (3c): only the NAT punch
+                    // request is acted on; register RESPs etc. are
+                    // fire-and-forget noise. Never a game frame - keep them
+                    // away from SendPointers/ParsePacket.
+                    handle_lobby_frame(buf, static_cast<DWORD>(recv_len), sender);
                 }
-
-                if (recv_len > 1 && buf[0] == POP_PACKET_TYPE)
+                else
                 {
-                    ParsePacket(buf, recv_len, sender.host().toString().c_str(), sender.port());
+                    if (first_connection)
+                    {
+                        SendPointers(sender.host().toString().c_str(), sender.port());
+                        first_connection = false;
+                    }
+
+                    if (recv_len > 1 && buf[0] == POP_PACKET_TYPE)
+                    {
+                        ParsePacket(buf, recv_len, sender.host().toString().c_str(), sender.port());
+                    }
                 }
             }
             catch (const Poco::TimeoutException&)
@@ -133,11 +238,16 @@ void Pop3NetworkUDP::RunServer()
 
             // Tick file transfer timeouts/retransmissions independently of packet arrival
             filetransfer_tick();
+            lobby_registration_tick();
         }
     }
-    catch (const Poco::Exception &)
+    catch (const Poco::Exception & e)
     {
-        // Do nothing
+        // Historically silent, which made a failed bind (port squatted by
+        // another process) look like a host that just never answers. The
+        // thread still dies - the game can't run without its socket - but
+        // now the log says why.
+        Pop3Debug::trace("Network receive thread died: %s", e.displayText().c_str());
     }
 }
 
