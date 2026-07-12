@@ -32,6 +32,7 @@
     <ClInclude Include="include\Pop3Lib.h" />
     <ClInclude Include="include\Pop3MajorFault.h" />
     <ClInclude Include="include\Pop3Math.h" />
+    <ClInclude Include="include\Pop3LobbyProtocol.h" />
     <ClInclude Include="include\Pop3Network.h" />
     <ClInclude Include="include\Pop3NetworkUDP.h" />
     <ClInclude Include="include\Pop3Point.h" />
