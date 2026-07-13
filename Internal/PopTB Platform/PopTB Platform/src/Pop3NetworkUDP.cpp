@@ -323,21 +323,11 @@ void Pop3NetworkUDP::RunServer()
     try
     {
         char buf[MAX_PACKET_SIZE];
-        const std::string ipaddr(GamePtrs.RemoteIPAddress);
-        auto & remote_port = *GamePtrs.RemotePort;
         auto & local_port = *GamePtrs.LocalPort;
         bool first_connection = true;
 
 		_set_se_translator((_se_translator_function)Pop3App::_Pop3_SEH);
 		set_terminate(Pop3App::_Pop3_Term);
-
-        if (_mode == SM_JOINING)
-        {
-            if (local_port)
-            {
-                local_port = remote_port;
-            }
-        }
 
         if (_mode == SM_JOINING)
         {
@@ -355,7 +345,7 @@ void Pop3NetworkUDP::RunServer()
         if (_mode == SM_HOSTING)
             dgs.bind(Poco::Net::SocketAddress(local_port));
         else
-            dgs.bind(Poco::Net::SocketAddress(local_port));
+            dgs.bind(Poco::Net::SocketAddress());
 
         // Fuck Winsock, ignore all those fucking connection reset errors.
         BOOL bNewBehavior = FALSE;

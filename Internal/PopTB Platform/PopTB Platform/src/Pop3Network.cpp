@@ -1285,6 +1285,8 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         break;
 
     case Pop3NetworkTypes::HOST_ACCEPT_JOIN:
+        if (am_host)
+            break;
         player_num = DATA_NOT_SET;
         // If the host attached a password challenge ([1][nonce]), hash the
         // nonce with our configured password now; SendMyInfo appends it.
@@ -1300,6 +1302,10 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
 
     case Pop3NetworkTypes::HOST_DENY_JOIN:
     {
+        // Host ignores a deny meant for a joiner (origin 9956402 "Fix joiners
+        // binding wrong port").
+        if (am_host)
+            break;
         const int raw = (buf_size >= 3) ? static_cast<unsigned char>(buffer[2]) : POP3NETWORK_DENY_VERSION;
         // Unknown future reasons collapse to version (the generic "can't join
         // this host" bucket) rather than passing arbitrary bytes to the UI.
