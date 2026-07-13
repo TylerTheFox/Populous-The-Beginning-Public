@@ -120,7 +120,11 @@ void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::
         else if (resp.Result == LOBBY_OK)
         {
             m_resume_notfound = 0;
-            m_relay_session_lost.store(false);   // session confirmed live
+            m_relay_session_lost.store(false);       // session confirmed live
+            // Step C: a JOINER re-points its host peer entry to the live lobby
+            // port (no-op if unchanged). The host reconnects via QueueReRegister.
+            if (!am_host)
+                RepointHostRelayPort(resp.LobbyPort);
         }
         return;
     }
@@ -164,6 +168,24 @@ void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::
 // which is fine; the next keepalive re-registers regardless.
 void Pop3NetworkUDP::lobby_registration_tick()
 {
+    // Step B: apply a queued reconnect re-registration (game -> net) before
+    // anything else - switch the keepalive to the freshly re-created lobby and
+    // reset both liveness clocks so we don't immediately re-flag loss.
+    if (m_rereg_pending.exchange(false, std::memory_order_acquire))
+    {
+        strncpy_s(m_lobbyreg_host, m_rereg_host, MAX_ADDRESS - 1);
+        m_lobbyreg_port = m_rereg_port;
+        memcpy(m_lobbyreg_key, m_rereg_key, POP3LOBBY_HOST_KEY_LEN);
+        m_lobbyreg_last_ms = 0;                          // keepalive the new port now
+        m_lobbyreg_last_resp_ms.store(GetCurrentMs());   // reset Phase 1 staleness clock
+        m_lobbyreg_armed = true;
+        am_host = true;
+        m_relay_session_lost.store(false);               // reconnected
+        m_resume_notfound = 0;
+        m_seed_dirty.store(true);                        // re-index the seed on the new session
+        Pop3Debug::trace("Relay reconnect: keepalive now targets %s:%d", m_lobbyreg_host, (int)m_lobbyreg_port);
+    }
+
     if (!m_lobbyreg_armed || !am_host)
         return;
     const ULONGLONG now = GetCurrentMs();

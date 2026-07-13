@@ -358,6 +358,23 @@ public:
     void                                            SetResumeSeed(uint32_t seed)    { if (m_resume_seed.exchange(seed) != seed) m_seed_dirty.store(true); }
     bool                                            RelaySessionLost() const        { return m_relay_session_lost.load(); }
     void                                            ClearRelaySessionLost()         { m_relay_session_lost.store(false); }
+    // Step B (host reconnect): after the game re-creates its lobby on the
+    // returned server, hand the new endpoint+key here. The net thread applies it
+    // at the top of the keepalive tick (never a live write of m_lobbyreg_*) and
+    // clears the relay-lost signal.
+    void                                            QueueReRegister(const char* host, UWORD port, const uint8_t* key);
+    // Step C (joiner reconnect): a joiner does not keepalive, but still probes by
+    // seed - give it the directory endpoint. RelayLobbyPort() is the lobby port
+    // the last LOBBY_RESUME_LOOKUP confirmed (0 = none); the game re-points its
+    // remote port to it when it changes (same server IP, so only the port moves).
+    void                                            SetJoinerResumeInfo(const char* host, UWORD dirPort);
+    // Step C: a joiner's resume lookup reports the live lobby port. If the host
+    // re-created after a restart it differs from the port our host-peer entry
+    // targets - rewrite that entry's port (same server IP) so the next heartbeat
+    // reaches the new relay, which re-learns us and resumes forwarding. The
+    // joiner's game send path uses players[host].port, NOT gnsi.Net.RemotePort.
+    // Net-thread only (takes players_mu); no-op if unchanged or no host peer.
+    void                                            RepointHostRelayPort(UWORD newPort);
 
     // Host migration (Mode A): a surviving joiner claims the dead host's proxy
     // slot. BeginHostClaim points registration at the lobby endpoint and starts
@@ -453,6 +470,13 @@ protected:
     std::atomic<bool>                               m_relay_session_lost{ false };// net -> game
     ULONGLONG                                       m_resume_last_ms = 0;        // network thread only (probe throttle)
     int                                             m_resume_notfound = 0;       // network thread only (consecutive NOT_FOUND debounce)
+    // Step B: pending re-registration published by the game thread (QueueReRegister),
+    // consumed by the net thread in lobby_registration_tick. Fields are written
+    // before the release-store of m_rereg_pending, so they publish atomically.
+    char                                            m_rereg_host[MAX_ADDRESS] = {};
+    UWORD                                           m_rereg_port = 0;
+    uint8_t                                         m_rereg_key[POP3LOBBY_HOST_KEY_LEN] = {};
+    std::atomic<bool>                               m_rereg_pending{ false };
 
     // Host migration (Mode A): state for a surviving joiner claiming the host slot.
     std::atomic<bool>                               m_claiming{ false };         // shared: game (Begin/Abort) + net (claim/grant)

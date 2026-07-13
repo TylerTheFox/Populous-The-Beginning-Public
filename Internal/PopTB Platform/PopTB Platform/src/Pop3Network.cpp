@@ -79,6 +79,53 @@ bool Pop3Network::LobbyKeepaliveStale()
     return now > last && (now - last) > kStaleMs;
 }
 
+// Step B (host reconnect): the game re-created its lobby on the returned server
+// and hands us the new endpoint+key. Publish the fields, THEN release-store the
+// flag so the net thread (lobby_registration_tick) sees a consistent snapshot
+// and switches its keepalive to the new port - no live write of m_lobbyreg_*.
+void Pop3Network::QueueReRegister(const char* host, UWORD port, const uint8_t* key)
+{
+    if (!host || !host[0] || !port || !key)
+        return;
+    strncpy_s(m_rereg_host, host, MAX_ADDRESS - 1);
+    m_rereg_port = port;
+    memcpy(m_rereg_key, key, POP3LOBBY_HOST_KEY_LEN);
+    m_rereg_pending.store(true, std::memory_order_release);
+    Pop3Debug::trace("Relay reconnect queued -> %s:%d", m_rereg_host, (int)m_rereg_port);
+}
+
+// Step C (joiner reconnect): a joiner never keepalives, but must still probe the
+// directory by seed to re-find a re-created lobby. Give it the directory
+// endpoint (same host as the lobby). Called at bring-up, before the receive
+// thread starts (same contract as SetLobbyRegistration), so no live-write race.
+void Pop3Network::SetJoinerResumeInfo(const char* host, UWORD dirPort)
+{
+    if (host && host[0])
+        strncpy_s(m_lobbyreg_host, host, MAX_ADDRESS - 1);
+    m_dir_port = dirPort;
+}
+
+// Step C (joiner reconnect): re-point the host peer entry at the re-created
+// lobby's new port. The joiner's game send (Send(NET_SERVERPLAYERS,...)) targets
+// players[host].port, so this - not gnsi.Net.RemotePort - is what actually moves
+// traffic to the new relay. The server IP is unchanged (address kept). Once the
+// joiner's next heartbeat lands on the new port the relay learns the joiner and
+// the HOST_PLAYERS re-learn path keeps the mapping. Net-thread only.
+void Pop3Network::RepointHostRelayPort(UWORD newPort)
+{
+    if (!newPort)
+        return;
+    Poco::Mutex::ScopedLock lock(players_mu);
+    for (auto& player : players)
+    {
+        if (player.second.inUse && player.second.host && player.second.port != newPort)
+        {
+            Pop3Debug::trace("Relay reconnect: host peer port %d -> %d", (int)player.second.port, (int)newPort);
+            player.second.port = newPort;
+        }
+    }
+}
+
 // Host migration (Mode A): begin claiming the dead host's proxy slot. Points
 // registration at the lobby endpoint (NOT armed yet - we aren't host) and lets
 // Pop3NetworkUDP::claim_tick() resend LOBBY_CLAIM_HOST until the server grants.
