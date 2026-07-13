@@ -54,8 +54,44 @@ void Pop3Network::SetLobbyRegistration(const char* lobbyHost, UWORD lobbyPort, c
     m_lobbyreg_port = lobbyPort;
     memcpy(m_lobbyreg_key, hostKey, POP3LOBBY_HOST_KEY_LEN);
     m_lobbyreg_last_ms = 0;   // first keepalive fires immediately
+    // Seed the RESP clock to "now" so a relay that is dead from the very first
+    // keepalive still trips LobbyKeepaliveStale after the grace window (rather
+    // than staying 0 = never-stale forever).
+    m_lobbyreg_last_resp_ms.store(GetCurrentMs());
     m_lobbyreg_armed = true;
     Pop3Debug::trace("Lobby registration armed -> %s:%d", m_lobbyreg_host, (int)m_lobbyreg_port);
+}
+
+// Relay liveness: presume the Pop3-Server relay dead once our host keepalives
+// have gone unanswered past kStaleMs. 35s = >3 missed 10s keepalives and below
+// the server's 45s hostGoneTimeoutSec, so we notice before the server would
+// even reap us. Gated to the connected host (armed + am_host) and suppressed
+// while claiming (host migration deliberately stops expecting RESPs).
+bool Pop3Network::LobbyKeepaliveStale()
+{
+    static const ULONGLONG kStaleMs = 35000;
+    if (!m_lobbyreg_armed || !am_host || m_claiming.load())
+        return false;
+    const ULONGLONG last = m_lobbyreg_last_resp_ms.load();
+    if (last == 0)
+        return false;
+    const ULONGLONG now = GetCurrentMs();
+    return now > last && (now - last) > kStaleMs;
+}
+
+// Host migration (Mode A): begin claiming the dead host's proxy slot. Points
+// registration at the lobby endpoint (NOT armed yet - we aren't host) and lets
+// Pop3NetworkUDP::claim_tick() resend LOBBY_CLAIM_HOST until the server grants.
+void Pop3Network::BeginHostClaim(const char* lobbyHost, UWORD lobbyPort)
+{
+    if (!lobbyHost || !lobbyHost[0] || !lobbyPort)
+        return;
+    strncpy_s(m_lobbyreg_host, lobbyHost, MAX_ADDRESS - 1);
+    m_lobbyreg_port = lobbyPort;
+    m_claim_last_ms = 0;              // first claim fires immediately
+    m_claim_succeeded.store(false);
+    m_claiming.store(true);
+    Pop3Debug::trace("Host claim begun -> %s:%d", m_lobbyreg_host, (int)m_lobbyreg_port);
 }
 #define		EXCEED(number,lex,hex)		if (number < lex) number=lex; if (number > hex) number=hex
 #define		UEXCEED(number,hex)		    if (number > hex) number=hex
@@ -566,6 +602,19 @@ SWORD Pop3Network::get_player_id(const char * peer_address, UWORD peer_port)
     return -1;
 }
 
+// Build-config signature for the join handshake (see check_join_request). The
+// platform library is compiled per game config (DevelopSW -> Debug, BetaSW /
+// ReleaseSW -> Release), so _DEBUG distinguishes Develop from Beta/Release here
+// without plumbing the game's Build.h into the transport. This catches the
+// original DEV-vs-BETA desync class (both share MAJOR/MINOR/BUILD but compile
+// the sim differently). Beta vs Release are the same platform-lib config and so
+// are NOT distinguished here (they would need a game-provided config byte).
+#ifdef _DEBUG
+    #define POP3_BUILD_CONFIG_ID 1   // Develop (Debug platform lib)
+#else
+    #define POP3_BUILD_CONFIG_ID 2   // Beta / Release (Release platform lib)
+#endif
+
 void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port, const char * buffer) const
 {
     U version;
@@ -576,6 +625,37 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
     ASSERT(pn < NETWORK_NUMBER_PLAYERS || pn == static_cast<BYTE>(DATA_NOT_SET)); // slot SPECTATOR_SLOT(9) is a valid spectator request
 
     Pop3Debug::trace("Join request recieved from %s on port %d requesting player number %d on build %d.%d.%d", peer_address, peer_port, pn, buffer[0], buffer[1], version.s);
+
+    // Architecture gate: x64 and Win32 builds have different pointer sizes and
+    // struct layouts (SendPointers below packs sizeof(void*) offsets, and every
+    // pointer-bearing wire struct differs), so they cannot interoperate and would
+    // desync immediately. Reject a bitness mismatch up front. buffer[5] carries
+    // the joiner's pointer size (send_join_request); a client that never sent it
+    // arrives as 0 -> mismatch -> deny, which is also correct (it is a different
+    // build and already version-incompatible).
+    const BYTE host_arch   = static_cast<BYTE>(sizeof(void*));
+    const BYTE client_arch = static_cast<BYTE>(buffer[5]);
+    if (client_arch != host_arch)
+    {
+        Pop3Debug::trace("NET_HOST_DENY_JOIN (architecture: client %d-bit vs host %d-bit)",
+                         (int)client_arch * 8, (int)host_arch * 8);
+        const char reason = POP3NETWORK_DENY_VERSION;
+        Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+        return;
+    }
+
+    // Build-config gate (buffer[6]): reject a Develop-vs-Beta/Release mismatch -
+    // same version + arch but a differently-compiled sim -> desync (the original
+    // footgun). An old client that never sent the byte arrives as 0 and is
+    // denied too (it is a different build, already version-incompatible).
+    if (static_cast<BYTE>(buffer[6]) != POP3_BUILD_CONFIG_ID)
+    {
+        Pop3Debug::trace("NET_HOST_DENY_JOIN (build config: client %d vs host %d)",
+                         (int)static_cast<BYTE>(buffer[6]), (int)POP3_BUILD_CONFIG_ID);
+        const char reason = POP3NETWORK_DENY_VERSION;
+        Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+        return;
+    }
 
     Poco::Mutex::ScopedLock lock(players_mu);
     for (auto & p : players)
@@ -989,6 +1069,8 @@ void Pop3Network::send_join_request() const
     buf[i++] = version.byte.c1;
     buf[i++] = version.byte.c2;
     buf[i++] = *GamePtrs.RequestedPlayerNum;
+    buf[i++] = static_cast<char>(sizeof(void*));   // architecture gate (4=Win32, 8=x64) - see check_join_request
+    buf[i++] = static_cast<char>(POP3_BUILD_CONFIG_ID);   // build-config gate (Develop vs Beta/Release)
     Send(0, GamePtrs.RemoteIPAddress, *GamePtrs.RemotePort, Pop3NetworkTypes::CLIENT_JOIN_REQUEST, buf, i);
 }
 

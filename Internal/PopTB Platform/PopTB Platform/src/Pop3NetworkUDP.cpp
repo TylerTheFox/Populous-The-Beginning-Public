@@ -64,9 +64,37 @@ Pop3NetworkUDP::~Pop3NetworkUDP()
 // this socket emit datagrams at arbitrary targets.
 void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::Net::SocketAddress& sender)
 {
+    const unsigned char msg = static_cast<unsigned char>(buf[1]);
+
+    // Host-migration claim RESP is accepted BEFORE the armed gate: a claiming
+    // joiner is not a registered host yet. On grant, adopt the fresh host key
+    // and assume the host role; the game layer polls HostClaimSucceeded().
+    if (m_claiming.load() && msg == LOBBY_CLAIM_HOST_RESP && len >= 2 + sizeof(Pop3LobbyClaimHostRespV1))
+    {
+        try
+        {
+            if (sender != Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port))
+                return;
+        }
+        catch (const Poco::Exception&) { return; }
+        Pop3LobbyClaimHostRespV1 resp;
+        memcpy(&resp, buf + 2, sizeof(resp));
+        if (resp.Result == LOBBY_OK)
+        {
+            memcpy(m_lobbyreg_key, resp.HostKey, POP3LOBBY_HOST_KEY_LEN);
+            m_lobbyreg_last_ms = 0;      // resume keepalives immediately
+            m_lobbyreg_armed = true;
+            am_host = true;
+            m_claiming.store(false);
+            m_claim_succeeded.store(true);
+            Pop3Debug::trace("Host claim GRANTED - assuming host role");
+        }
+        // else: not granted (host still deemed live) - keep claiming.
+        return;
+    }
+
     if (!m_lobbyreg_armed)
         return;
-    const unsigned char msg = static_cast<unsigned char>(buf[1]);
     try
     {
         if (sender != Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port))
@@ -76,6 +104,7 @@ void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::
         // the host's real latency in a proxied game (see getLobbyServerPingMs).
         if (msg == LOBBY_HOST_REGISTER_RESP)
         {
+            m_lobbyreg_last_resp_ms.store(GetCurrentMs());   // relay-liveness clock
             if (m_lobbyreg_sent_ms)
                 m_lobby_ping_ms.store(static_cast<int>(GetCurrentMs() - m_lobbyreg_sent_ms));
             return;
@@ -116,11 +145,75 @@ void Pop3NetworkUDP::lobby_registration_tick()
     frame[1] = LOBBY_HOST_REGISTER;
     Pop3LobbyHostRegisterV1 reg{};
     reg.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
+    reg.PlayerCount = static_cast<uint8_t>(GetGamePlayerCount());   // confirmed roster -> browser count (denied/wrong-password legs excluded)
     memcpy(reg.HostKey, m_lobbyreg_key, POP3LOBBY_HOST_KEY_LEN);
     memcpy(frame + 2, &reg, sizeof(reg));
     try
     {
         dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port));
+    }
+    catch (const Poco::Exception&)
+    {
+    }
+}
+
+// Host migration: while claiming, resend LOBBY_CLAIM_HOST from the game socket
+// to the lobby endpoint (~1s). The LobbySession grants once the old host has
+// been silent past its threshold, replying LOBBY_CLAIM_HOST_RESP (handled in
+// handle_lobby_frame above, before the armed gate).
+void Pop3NetworkUDP::claim_tick()
+{
+    if (!m_claiming.load())
+        return;
+    const ULONGLONG now = GetCurrentMs();
+    if (m_claim_last_ms && now - m_claim_last_ms < 1000)
+        return;
+    m_claim_last_ms = now;
+
+    unsigned char frame[2 + sizeof(Pop3LobbyClaimHostV1)];
+    frame[0] = POP3LOBBY_PACKET_TYPE;
+    frame[1] = LOBBY_CLAIM_HOST;
+    Pop3LobbyClaimHostV1 c{};
+    c.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
+    memcpy(frame + 2, &c, sizeof(c));
+    try
+    {
+        dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port));
+    }
+    catch (const Poco::Exception&)
+    {
+    }
+}
+
+// Host left a hosted federated game (RequestLobbyClose): emit ONE key-gated
+// LOBBY_CLOSE and disarm the keepalive so the LobbySession reaps immediately
+// instead of lingering until the 45s host-gone timer (or forever, while the
+// zombie keepalive keeps refreshing m_lastHostMs). Disarming is the load-bearing
+// half: even if this datagram is lost, keepalives stop, so the reap finally fires.
+void Pop3NetworkUDP::lobby_close_tick()
+{
+    if (m_lobby_leave_requested.exchange(false) && m_lobbyreg_armed)
+        m_lobby_close_left = 3;          // send LOBBY_CLOSE a few times (one UDP loss shouldn't leave a 45s zombie)
+    if (m_lobby_close_left <= 0)
+        return;
+    if (!m_lobbyreg_armed)               // joiner / non-federated host, or already disarmed
+    {
+        m_lobby_close_left = 0;
+        return;
+    }
+    if (--m_lobby_close_left == 0)
+        m_lobbyreg_armed = false;        // stop LOBBY_HOST_REGISTER after the last send -> host-gone reap can still fire
+    unsigned char frame[2 + sizeof(Pop3LobbyCloseV1)];
+    frame[0] = POP3LOBBY_PACKET_TYPE;
+    frame[1] = LOBBY_CLOSE;
+    Pop3LobbyCloseV1 close_msg{};
+    close_msg.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
+    memcpy(close_msg.HostKey, m_lobbyreg_key, POP3LOBBY_HOST_KEY_LEN);
+    memcpy(frame + 2, &close_msg, sizeof(close_msg));
+    try
+    {
+        dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port));
+        Pop3Debug::trace("LOBBY_CLOSE sent (host left game) to %s:%d", m_lobbyreg_host, (int)m_lobbyreg_port);
     }
     catch (const Poco::Exception&)
     {
@@ -198,6 +291,8 @@ void Pop3NetworkUDP::RunServer()
                 {
                     filetransfer_tick();
                     lobby_registration_tick();
+                    claim_tick();
+                    lobby_close_tick();
                     continue;
                 }
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
@@ -239,6 +334,8 @@ void Pop3NetworkUDP::RunServer()
             // Tick file transfer timeouts/retransmissions independently of packet arrival
             filetransfer_tick();
             lobby_registration_tick();
+            claim_tick();
+            lobby_close_tick();
         }
     }
     catch (const Poco::Exception & e)

@@ -100,6 +100,7 @@ enum Pop3LobbyResult : uint8_t
     LOBBY_ERR_VERSION_MISMATCH = 5,   // game build differs from the lobby's
     LOBBY_ERR_BAD_REQUEST      = 6,   // malformed / wrong protocol version
     LOBBY_ERR_BAD_KEY          = 7,   // LOBBY_HOST_REGISTER / LOBBY_CLOSE key mismatch
+    LOBBY_ERR_IN_PROGRESS      = 8,   // lobby exists but the game already started
 };
 
 // Lobby record flags (LOBBY_CREATE.Flags and Pop3LobbyRecordV1.Flags)
@@ -161,7 +162,7 @@ struct Pop3LobbyJoinRespV1
 struct Pop3LobbyHostRegisterV1
 {
     uint8_t ProtocolVersion;
-    uint8_t Reserved;
+    uint8_t PlayerCount;   // host's CONFIRMED roster size (was Reserved; 0 from pre-count hosts). The directory trusts this over the raw joiner-leg count so denied / wrong-password / still-connecting legs never inflate the browser count.
     uint8_t HostKey[POP3LOBBY_HOST_KEY_LEN];
 };
 

@@ -335,6 +335,35 @@ public:
     // the host's real latency - its loopback "1ms" ping is a lie to everyone.
     int                                             getLobbyServerPingMs() const { return m_lobby_ping_ms.load(); }
 
+    // Relay liveness (Phase 1, 2026-07-13): true when we are the connected HOST
+    // of a federated lobby whose LOBBY_HOST_REGISTER keepalives have gone
+    // unanswered long enough that the Pop3-Server relay is presumed dead
+    // (restart / offline). The game polls this on the connected-lobby screen to
+    // surface a "lost connection to server" dialog instead of sitting in a lobby
+    // whose chat/relay is silently black-holed. Joiners are covered by the
+    // existing peer-silence timeout (check_network_timeouts). Not stale while
+    // claiming (host migration) or before the first keepalive was armed.
+    bool                                            LobbyKeepaliveStale();
+
+    // Host migration (Mode A): a surviving joiner claims the dead host's proxy
+    // slot. BeginHostClaim points registration at the lobby endpoint and starts
+    // periodic LOBBY_CLAIM_HOST from the game socket; on grant the net thread
+    // adopts the fresh host key, arms registration + am_host, and raises
+    // HostClaimSucceeded() for the game to poll (-> finish_host_migration).
+    // AbortHostClaim ends a stalled attempt so the normal disconnect can run.
+    void                                            BeginHostClaim(const char* lobbyHost, UWORD lobbyPort);
+    // Also rolls back a host role a just-landed grant may have adopted (TOCTOU:
+    // the net thread can apply the grant between the game's HostClaimSucceeded()
+    // check and this abort), so the survivor can't strand as an armed host it
+    // then force-quits. A claiming peer was never a legit host, so this is safe.
+    void                                            AbortHostClaim() { m_claiming.store(false); m_claim_succeeded.store(false); m_lobbyreg_armed = false; am_host = false; }
+    bool                                            HostClaimSucceeded() const { return m_claim_succeeded.load(); }
+
+    // Host left a hosted federated game: ask the receive thread to emit one
+    // LOBBY_CLOSE and disarm the keepalive so the lobby reaps immediately (no
+    // zombie). No-op for joiners / non-federated hosts (armed only for a host).
+    void                                            RequestLobbyClose() { m_lobby_leave_requested.store(true); }
+
     void                                            transfer_file(DWORD to, const std::string & file_name, const char * data, size_t length);
     FileTransferStatus                              getFileTransferStatus();
     // Percent is side-aware: receiving side = parts received / total; sending
@@ -396,6 +425,17 @@ protected:
     ULONGLONG                                       m_lobbyreg_last_ms = 0;
     ULONGLONG                                       m_lobbyreg_sent_ms = 0;      // network thread only
     std::atomic<int>                                m_lobby_ping_ms{ -1 };       // read by game threads
+    // Last LOBBY_HOST_REGISTER_RESP arrival (ms). Written by the net thread on
+    // each RESP and seeded by SetLobbyRegistration; read by the game thread in
+    // LobbyKeepaliveStale to detect a dead relay. Atomic for that cross-thread read.
+    std::atomic<ULONGLONG>                          m_lobbyreg_last_resp_ms{ 0 };
+
+    // Host migration (Mode A): state for a surviving joiner claiming the host slot.
+    std::atomic<bool>                               m_claiming{ false };         // shared: game (Begin/Abort) + net (claim/grant)
+    ULONGLONG                                       m_claim_last_ms = 0;         // network thread only
+    std::atomic<bool>                               m_claim_succeeded{ false };  // net thread -> polled by game
+    std::atomic<bool>                               m_lobby_leave_requested{ false }; // game -> net: LOBBY_CLOSE + disarm now
+    int                                             m_lobby_close_left = 0;           // net thread: LOBBY_CLOSE resends remaining (UDP is lossy)
 
     void                                            ParsePacket(char* buffer, DWORD buf_size, const char* peer_address, UWORD peer_port);
     SWORD                                           add_player(const char* peer_address, UWORD peer_port, SWORD player_number, bool is_host, UNICODE_CHAR* player_name);
