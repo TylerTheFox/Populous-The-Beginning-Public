@@ -93,6 +93,38 @@ void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::
         return;
     }
 
+    // Seed-rendezvous lookup RESP from the DIRECTORY port. Accepted BEFORE the
+    // armed gate: joiners are never armed but still probe by seed. NOT_FOUND =
+    // our relay session is gone (server restart) -> raise the flag the game
+    // polls (RelaySessionLost); OK = alive (Step C re-points if the port moved).
+    if (msg == LOBBY_RESUME_LOOKUP_RESP && len >= 2 + sizeof(Pop3LobbyResumeLookupRespV1))
+    {
+        try
+        {
+            if (m_dir_port == 0 || m_lobbyreg_host[0] == 0
+                || sender != Poco::Net::SocketAddress(m_lobbyreg_host, m_dir_port))
+                return;
+        }
+        catch (const Poco::Exception&) { return; }
+        Pop3LobbyResumeLookupRespV1 resp;
+        memcpy(&resp, buf + 2, sizeof(resp));
+        if (resp.Result == LOBBY_ERR_NOT_FOUND)
+        {
+            // Debounce: one NOT_FOUND can be the ~1 RTT window before our seed
+            // keepalive registers at game start. Two consecutive (>= ~4s) means
+            // the session is really gone.
+            if (++m_resume_notfound >= 2 && !m_relay_session_lost.exchange(true))
+                Pop3Debug::trace("Seed rendezvous: relay session GONE (server restarted), seed %u",
+                                 (unsigned)m_resume_seed.load());
+        }
+        else if (resp.Result == LOBBY_OK)
+        {
+            m_resume_notfound = 0;
+            m_relay_session_lost.store(false);   // session confirmed live
+        }
+        return;
+    }
+
     if (!m_lobbyreg_armed)
         return;
     try
@@ -135,7 +167,11 @@ void Pop3NetworkUDP::lobby_registration_tick()
     if (!m_lobbyreg_armed || !am_host)
         return;
     const ULONGLONG now = GetCurrentMs();
-    if (m_lobbyreg_last_ms && now - m_lobbyreg_last_ms < 10000)
+    // A seed change (game just started) forces an immediate keepalive so the
+    // LobbySession indexes the new seed at once - otherwise early resume probes
+    // would false-NOT_FOUND until the next 10s keepalive.
+    const bool seed_changed = m_seed_dirty.exchange(false);
+    if (!seed_changed && m_lobbyreg_last_ms && now - m_lobbyreg_last_ms < 10000)
         return;
     m_lobbyreg_last_ms = now;
     m_lobbyreg_sent_ms = now;   // RESP arrival - this = relay RTT
@@ -147,10 +183,43 @@ void Pop3NetworkUDP::lobby_registration_tick()
     reg.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
     reg.PlayerCount = static_cast<uint8_t>(GetGamePlayerCount());   // confirmed roster -> browser count (denied/wrong-password legs excluded)
     memcpy(reg.HostKey, m_lobbyreg_key, POP3LOBBY_HOST_KEY_LEN);
+    reg.Seed = m_resume_seed.load();   // index the session by game seed (0 pre-game) for LOBBY_RESUME_LOOKUP
     memcpy(frame + 2, &reg, sizeof(reg));
     try
     {
         dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_lobbyreg_port));
+    }
+    catch (const Poco::Exception&)
+    {
+    }
+}
+
+// Seed rendezvous probe (2026-07-13): once in-game (m_resume_seed != 0), ask the
+// DIRECTORY port every ~2s whether a live session still serves our seed. Run by
+// BOTH host and joiner (NOT gated on am_host) so either can detect a relay
+// restart instantly (LOBBY_ERR_NOT_FOUND -> RelaySessionLost) and, in Step C,
+// re-find the new lobby port. Needs the directory endpoint (m_lobbyreg_host +
+// m_dir_port), which the host has from bring-up; joiners set it the same way.
+void Pop3NetworkUDP::resume_lookup_tick()
+{
+    const uint32_t seed = m_resume_seed.load();
+    if (seed == 0 || m_dir_port == 0 || m_lobbyreg_host[0] == 0)
+        return;
+    const ULONGLONG now = GetCurrentMs();
+    if (m_resume_last_ms && now - m_resume_last_ms < 2000)
+        return;
+    m_resume_last_ms = now;
+
+    unsigned char frame[2 + sizeof(Pop3LobbyResumeLookupV1)];
+    frame[0] = POP3LOBBY_PACKET_TYPE;
+    frame[1] = LOBBY_RESUME_LOOKUP;
+    Pop3LobbyResumeLookupV1 req{};
+    req.ProtocolVersion = POP3LOBBY_PROTOCOL_VERSION;
+    req.Seed = seed;
+    memcpy(frame + 2, &req, sizeof(req));
+    try
+    {
+        dgs.sendTo(frame, sizeof(frame), Poco::Net::SocketAddress(m_lobbyreg_host, m_dir_port));
     }
     catch (const Poco::Exception&)
     {
@@ -293,6 +362,7 @@ void Pop3NetworkUDP::RunServer()
                     lobby_registration_tick();
                     claim_tick();
                     lobby_close_tick();
+                    resume_lookup_tick();
                     continue;
                 }
                 int recv_len = dgs.receiveFrom(buf, sizeof(buf), sender);
@@ -336,6 +406,7 @@ void Pop3NetworkUDP::RunServer()
             lobby_registration_tick();
             claim_tick();
             lobby_close_tick();
+            resume_lookup_tick();
         }
     }
     catch (const Poco::Exception & e)

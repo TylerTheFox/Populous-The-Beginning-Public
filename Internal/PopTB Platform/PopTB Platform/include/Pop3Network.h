@@ -345,6 +345,20 @@ public:
     // claiming (host migration) or before the first keepalive was armed.
     bool                                            LobbyKeepaliveStale();
 
+    // Seed rendezvous (2026-07-13). The game pushes gsi.Seed once in-game so the
+    // transport can (a) stamp it into the host keepalive - indexing the relay
+    // session by seed - and (b) probe the DIRECTORY port ("is my session still
+    // there?") to detect a relay restart instantly and, later, to re-find the
+    // new port. SetDirectoryPort is set at lobby bring-up (same host as the
+    // lobby port); SetResumeSeed is called per-frame in-game (idempotent).
+    void                                            SetDirectoryPort(UWORD dirPort) { m_dir_port = dirPort; }
+    // On a seed CHANGE (game start / new game), flag it so the net thread fires
+    // an immediate keepalive - the relay indexes the seed at once instead of up
+    // to a keepalive-interval later, which would make early probes false-NOT_FOUND.
+    void                                            SetResumeSeed(uint32_t seed)    { if (m_resume_seed.exchange(seed) != seed) m_seed_dirty.store(true); }
+    bool                                            RelaySessionLost() const        { return m_relay_session_lost.load(); }
+    void                                            ClearRelaySessionLost()         { m_relay_session_lost.store(false); }
+
     // Host migration (Mode A): a surviving joiner claims the dead host's proxy
     // slot. BeginHostClaim points registration at the lobby endpoint and starts
     // periodic LOBBY_CLAIM_HOST from the game socket; on grant the net thread
@@ -429,6 +443,16 @@ protected:
     // each RESP and seeded by SetLobbyRegistration; read by the game thread in
     // LobbyKeepaliveStale to detect a dead relay. Atomic for that cross-thread read.
     std::atomic<ULONGLONG>                          m_lobbyreg_last_resp_ms{ 0 };
+
+    // Seed rendezvous: directory port (7570) on m_lobbyreg_host; the game seed
+    // (set in-game); and the "relay session no longer exists" signal raised by a
+    // LOBBY_RESUME_LOOKUP_RESP of LOBBY_ERR_NOT_FOUND.
+    UWORD                                           m_dir_port = 0;
+    std::atomic<uint32_t>                           m_resume_seed{ 0 };          // game -> net
+    std::atomic<bool>                               m_seed_dirty{ false };       // game -> net: seed changed, force an immediate keepalive
+    std::atomic<bool>                               m_relay_session_lost{ false };// net -> game
+    ULONGLONG                                       m_resume_last_ms = 0;        // network thread only (probe throttle)
+    int                                             m_resume_notfound = 0;       // network thread only (consecutive NOT_FOUND debounce)
 
     // Host migration (Mode A): state for a surviving joiner claiming the host slot.
     std::atomic<bool>                               m_claiming{ false };         // shared: game (Begin/Abort) + net (claim/grant)

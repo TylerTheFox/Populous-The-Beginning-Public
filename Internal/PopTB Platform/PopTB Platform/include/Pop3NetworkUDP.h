@@ -30,6 +30,7 @@ private:
     void lobby_registration_tick();
     void claim_tick();   // host migration: resend LOBBY_CLAIM_HOST while claiming
     void lobby_close_tick();   // host left a hosted game: emit LOBBY_CLOSE + disarm keepalives
+    void resume_lookup_tick();   // seed rendezvous: probe the directory port for our session by seed
     // LOBBY_HOST_PUNCH handler: open our NAT toward a per-joiner proxy port.
     void handle_lobby_frame(const char* buf, DWORD len, const Poco::Net::SocketAddress& sender);
 };

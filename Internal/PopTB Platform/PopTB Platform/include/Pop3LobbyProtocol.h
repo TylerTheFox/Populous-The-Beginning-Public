@@ -87,6 +87,14 @@ enum Pop3LobbyMsg : uint8_t
     LOBBY_CLAIM_HOST         = 0x4B,  // surviving joiner game socket -> LOBBY port (Pop3LobbyClaimHostV1)
     LOBBY_CLAIM_HOST_RESP    = 0x4C,  // lobby port -> claimer (Pop3LobbyClaimHostRespV1)
 
+    // Seed rendezvous / reconnect (2026-07-13). The game seed (gsi.Seed) is
+    // shared bit-identically by every peer, so it is a stable key to re-find a
+    // relay session after a Pop3-Server restart. Any peer (host OR joiner) sends
+    // LOBBY_RESUME_LOOKUP to the DIRECTORY port; the directory answers the live
+    // lobby port for that seed, or LOBBY_ERR_NOT_FOUND if no session holds it.
+    LOBBY_RESUME_LOOKUP      = 0x4D,  // peer game socket -> DIRECTORY port (Pop3LobbyResumeLookupV1)
+    LOBBY_RESUME_LOOKUP_RESP = 0x4E,  // directory -> peer (Pop3LobbyResumeLookupRespV1)
+
     DIR_SYNC                 = 0x50,  // server <-> server federation lobby-table exchange (build step 4)
 };
 
@@ -161,9 +169,10 @@ struct Pop3LobbyJoinRespV1
 
 struct Pop3LobbyHostRegisterV1
 {
-    uint8_t ProtocolVersion;
-    uint8_t PlayerCount;   // host's CONFIRMED roster size (was Reserved; 0 from pre-count hosts). The directory trusts this over the raw joiner-leg count so denied / wrong-password / still-connecting legs never inflate the browser count.
-    uint8_t HostKey[POP3LOBBY_HOST_KEY_LEN];
+    uint8_t  ProtocolVersion;
+    uint8_t  PlayerCount;   // host's CONFIRMED roster size (was Reserved; 0 from pre-count hosts). The directory trusts this over the raw joiner-leg count so denied / wrong-password / still-connecting legs never inflate the browser count.
+    uint8_t  HostKey[POP3LOBBY_HOST_KEY_LEN];
+    uint32_t Seed;          // gsi.Seed once the game has started (0 in the pre-game lobby). Lets the LobbySession index itself for LOBBY_RESUME_LOOKUP after a server restart.
 };
 
 struct Pop3LobbyHostRegisterRespV1
@@ -197,6 +206,23 @@ struct Pop3LobbyClaimHostRespV1
     uint8_t Result;   // LOBBY_OK | LOBBY_ERR_BAD_REQUEST (host still live / claimer not a joiner)
     uint8_t Reserved;
     uint8_t HostKey[POP3LOBBY_HOST_KEY_LEN];   // fresh key for the new host (valid on LOBBY_OK)
+};
+
+// Seed rendezvous / reconnect (2026-07-13). Sent to the DIRECTORY port by any
+// peer that holds the game seed (host and joiners) to re-find its relay session
+// after a server restart.
+struct Pop3LobbyResumeLookupV1
+{
+    uint8_t  ProtocolVersion;
+    uint8_t  Reserved;
+    uint32_t Seed;   // gsi.Seed
+};
+
+struct Pop3LobbyResumeLookupRespV1
+{
+    uint8_t  ProtocolVersion;
+    uint8_t  Result;      // LOBBY_OK (LobbyPort valid) | LOBBY_ERR_NOT_FOUND (no live session for the seed)
+    uint16_t LobbyPort;   // the live lobby port serving that seed (valid on LOBBY_OK)
 };
 
 // LOBBY_LIST_RESP header; Count records follow immediately. Responses are
@@ -238,7 +264,7 @@ static_assert(sizeof(Pop3LobbyCreateV1) == 138 && offsetof(Pop3LobbyCreateV1, Na
 static_assert(sizeof(Pop3LobbyCreateRespV1) == 20, "create resp v1 layout");
 static_assert(sizeof(Pop3LobbyJoinV1) == 134 && offsetof(Pop3LobbyJoinV1, Name) == 6, "join v1 layout");
 static_assert(sizeof(Pop3LobbyJoinRespV1) == 10, "join resp v1 layout");
-static_assert(sizeof(Pop3LobbyHostRegisterV1) == 18, "host register v1 layout");
+static_assert(sizeof(Pop3LobbyHostRegisterV1) == 22, "host register v1 layout");
 static_assert(sizeof(Pop3LobbyHostRegisterRespV1) == 2, "host register resp v1 layout");
 static_assert(sizeof(Pop3LobbyCloseV1) == 18, "close v1 layout");
 static_assert(sizeof(Pop3LobbyHostPunchV1) == 4, "host punch v1 layout");
