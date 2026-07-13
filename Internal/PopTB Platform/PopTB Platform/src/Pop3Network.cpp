@@ -1110,7 +1110,41 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
                 break;
             }
         }
+        // Duplicate-name gate: reject BEFORE add_player so the joiner gets a
+        // clear deny (and the menu shows "name in use") instead of add_player
+        // silently returning -1 and the client retrying to the 30s timeout -
+        // the cause of "connecting... never completes" and stale roster churn
+        // when two peers share the default name. Mirrors add_player's reject.
+        {
+            UNICODE_CHAR* jname = reinterpret_cast<UNICODE_CHAR*>(&buffer[4]);
+            Poco::Mutex::ScopedLock lock(players_mu);
+            auto it = players.find(jname);
+            if (it != players.end() && it->second.inUse)
+            {
+                const bool same_endpoint = (strncmp(it->second.address, peer_address, MAX_ADDRESS) == 0)
+                                        && (it->second.port == peer_port);
+                const bool unroutable = (it->second.address[0] == '\0')
+                                     || (strcmp(it->second.address, "UNK") == 0);
+                if (it->second.host || (!same_endpoint && !unroutable))
+                {
+                    Pop3Debug::trace("CLIENT_JOIN from %s:%d DENIED - name '%ls' already in use",
+                                     peer_address, (int)peer_port, jname);
+                    const char reason = POP3NETWORK_DENY_NAME;
+                    Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+                    break;
+                }
+            }
+        }
+
         from_id = add_player(peer_address, peer_port, player_number, is_host, reinterpret_cast<UNICODE_CHAR*>(&buffer[4]));
+        if (from_id < 0)
+        {
+            // add_player refused (all network slots full, or a duplicate that
+            // raced past the pre-check). Tell the joiner so it stops retrying.
+            const char reason = POP3NETWORK_DENY_FULL;
+            Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+            break;
+        }
         send_players(from_id);
         send_add_player(from_id);
         break;
@@ -1140,14 +1174,17 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         const int raw = (buf_size >= 3) ? static_cast<unsigned char>(buffer[2]) : POP3NETWORK_DENY_VERSION;
         // Unknown future reasons collapse to version (the generic "can't join
         // this host" bucket) rather than passing arbitrary bytes to the UI.
-        const int reason = (raw == POP3NETWORK_DENY_PASSWORD || raw == POP3NETWORK_DENY_FULL)
+        const int reason = (raw == POP3NETWORK_DENY_PASSWORD || raw == POP3NETWORK_DENY_FULL
+                         || raw == POP3NETWORK_DENY_NAME)
             ? raw : POP3NETWORK_DENY_VERSION;
         m_join_deny_reason.store(reason);
         server_status = (reason == POP3NETWORK_DENY_PASSWORD) ? Pop3ErrorStatusCodes::BAD_PASSWORD
+                      : (reason == POP3NETWORK_DENY_NAME) ? Pop3ErrorStatusCodes::BAD_NAME
                       : Pop3ErrorStatusCodes::BAD_VERSION;
         Pop3Debug::trace("NET_HOST_DENY_JOIN reason=%s",
                          reason == POP3NETWORK_DENY_PASSWORD ? "password"
-                       : reason == POP3NETWORK_DENY_FULL ? "lobby full" : "version");
+                       : reason == POP3NETWORK_DENY_FULL ? "lobby full"
+                       : reason == POP3NETWORK_DENY_NAME ? "name in use" : "version");
         break;
     }
 

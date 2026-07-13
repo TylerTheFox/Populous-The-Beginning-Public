@@ -39,6 +39,7 @@ typedef void (NET_CALLBACK *NetworkPingCallback)(WORD id, WORD seq, DWORD rondtr
 #define POP3NETWORK_DENY_VERSION            (0)
 #define POP3NETWORK_DENY_PASSWORD           (1)
 #define POP3NETWORK_DENY_FULL               (2)   // lobby size cap reached (3c; spectators exempt)
+#define POP3NETWORK_DENY_NAME               (3)   // player name already in use by a different peer
 #define	POP3NETWORK_MAX_SESSION_NAME_LENGTH (64)
 #define	POP3NETWORK_MAX_PLAYER_NAME_LENGTH  (32)
 #define	NET_ALLPLAYERS						(0xffffffff)
