@@ -241,6 +241,7 @@ struct PopTBWindowAck
 #define FT_INTER_PACKET_SLEEP_MS    1
 #define FT_WINDOW_TIMEOUT_MS        3000
 #define FT_MAX_RETRIES              20
+#define FT_MAX_FILE_BYTES           (128u * 1024u * 1024u)  // F1/F4: reject absurd/hostile file_size
 
 enum class FileTransferStatus
 {
@@ -530,11 +531,11 @@ private:
     void                                            compile_fileparts();
 
     // File Transfers — sliding window protocol
-    void                                            filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer);
+    void                                            filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len);
     void                                            filetransfer_host_process_client_ready(const char * peer_address, UWORD peer_port);
-    void                                            filetransfer_client_process_file_part(const char * buffer);
-    void                                            filetransfer_client_process_window_complete(const char * buffer);
-    void                                            filetransfer_host_process_window_ack(const char * buffer);
+    void                                            filetransfer_client_process_file_part(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len);
+    void                                            filetransfer_client_process_window_complete(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len);
+    void                                            filetransfer_host_process_window_ack(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len);
     void                                            filetransfer_host_process_client_transfer_successful();
     void                                            filetransfer_host_send_window();
     void                                            filetransfer_host_send_missing(const unsigned int * bitmap, unsigned int ws, unsigned int wsize);

@@ -423,7 +423,9 @@ void Pop3Network::transfer_file(DWORD to, const std::string & file_name, const c
         memcpy(&FT.FileParts[idx].data, file_ptr, remaining_size);
     }
 
-    memcpy(&FT.FileHeader.file_name[0], file_name.c_str(), file_name.length());
+    const size_t name_len = (std::min)(file_name.length(), (size_t)(FILE_NAME_PACKET_SIZE - 1));
+    memset(FT.FileHeader.file_name, 0, sizeof(FT.FileHeader.file_name));
+    memcpy(FT.FileHeader.file_name, file_name.c_str(), name_len);   // F6: NUL guaranteed (name_len < size)
     FT.FileHeader.file_size = length;
     FT.SleepTimer = 0;
 
@@ -1374,19 +1376,19 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         ProcessChat(&buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::HOST_READY_FOR_FILE_TRANSFER:
-        filetransfer_client_process_fileheader(peer_address, peer_port, &buffer[2]);
+        filetransfer_client_process_fileheader(peer_address, peer_port, &buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::CLIENT_READY_FOR_FILE_TRANSFER:
         filetransfer_host_process_client_ready(peer_address, peer_port);
         break;
     case Pop3NetworkTypes::HOST_SEND_FILE_PART:
-        filetransfer_client_process_file_part(&buffer[2]);
+        filetransfer_client_process_file_part(peer_address, peer_port, &buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::HOST_SEND_FILE_TRANSFER_COMPLETE:
-        filetransfer_client_process_window_complete(&buffer[2]);
+        filetransfer_client_process_window_complete(peer_address, peer_port, &buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::CLIENT_RESEND_FILE_PART:
-        filetransfer_host_process_window_ack(&buffer[2]);
+        filetransfer_host_process_window_ack(peer_address, peer_port, &buffer[2], buf_size - 2);
         break;
     case Pop3NetworkTypes::CLIENT_RESNET_FILE_PARTS_COMPLETE:
         break; // no longer used in sliding window protocol
@@ -1431,15 +1433,26 @@ void Pop3Network::compile_fileparts()
 //  Sliding-window file transfer implementation
 // ---------------------------------------------------------------------------
 
-void Pop3Network::filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer)
+void Pop3Network::filetransfer_client_process_fileheader(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
+    if (payload_len < sizeof(PopTBFileStartPacket)) return;             // F5: length before cast/copy
+    // F3: only (re)start from an idle/finished slot, or from the SAME peer that
+    // owns the in-progress transfer - a third lobby peer cannot reset/hijack it.
+    const bool fresh = (FT.Status == FileTransferStatus::Ready ||
+                        FT.Status == FileTransferStatus::Transfer_Complete);
+    const bool same_peer = (FT.peer_port == peer_port) && (FT.peer_address == peer_address);
+    if (!fresh && !same_peer) return;
+    PopTBFileStartPacket hdr = *reinterpret_cast<const PopTBFileStartPacket*>(buffer);
+    hdr.file_name[FILE_NAME_PACKET_SIZE - 1] = 0;                       // F5: never trust the wire NUL
+    if (hdr.file_size == 0 || hdr.file_size > FT_MAX_FILE_BYTES) return; // F1/F4: bound file_size
     FT.LastContactTime = GetCurrentMs();
-    FT.FileHeader = *reinterpret_cast<const PopTBFileStartPacket*>(buffer);
+    FT.FileHeader   = hdr;
+    FT.total_parts  = static_cast<unsigned int>(ceil(static_cast<double>(hdr.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
     FT.peer_address = peer_address;
-    FT.peer_port = peer_port;
+    FT.peer_port    = peer_port;
     FT.FilePartsRecv.clear();
-    FT.SleepTimer = 0;
+    FT.SleepTimer   = 0;
     FT.Status = FileTransferStatus::Client_Waiting_On_Host_To_Start;
 
     Pop3Debug::trace("File transfer starting: %s (%zu bytes)", FT.FileHeader.file_name, FT.FileHeader.file_size);
@@ -1455,6 +1468,14 @@ void Pop3Network::filetransfer_host_process_client_ready(const char * peer_addre
     if (FT.Status != FileTransferStatus::Host_Waiting_On_Client_Ack &&
         FT.Status != FileTransferStatus::Host_Sending_Window &&
         FT.Status != FileTransferStatus::Host_Waiting_On_Window_Ack)
+        return;
+    // F3: this READY is what SELECTS the send destination. transfer_file()
+    // already captured the intended recipient (roster addr:port), so only that
+    // peer may drive it - without this, any lobby peer's crafted CLIENT_READY
+    // re-points the whole file send to itself and rewinds the window (a durable
+    // file-sync DoS against the real joiner). Mirrors the sender-auth on the
+    // sibling FT receive handlers.
+    if (FT.peer_port != peer_port || FT.peer_address != peer_address)
         return;
     FT.LastContactTime = GetCurrentMs();
     FT.peer_address = peer_address;
@@ -1521,15 +1542,20 @@ void Pop3Network::filetransfer_host_send_missing(const unsigned int * bitmap, un
     FT.Status = FileTransferStatus::Host_Waiting_On_Window_Ack;
 }
 
-void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
+void Pop3Network::filetransfer_client_process_file_part(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
-    if (FT.Status == FileTransferStatus::Transfer_Complete)
+    // State gate doubles as a role gate (a host is never in a Client_* state).
+    if (FT.Status != FileTransferStatus::Client_Waiting_On_Host_To_Start &&
+        FT.Status != FileTransferStatus::Client_Receiving_Window)
         return;
+    if (payload_len < sizeof(PopTBFilePartPacket)) return;
+    if (FT.peer_port != peer_port || FT.peer_address != peer_address) return;   // F3: sender auth
+    auto fp_ptr = reinterpret_cast<const PopTBFilePartPacket*>(buffer);
+    if (FT.total_parts == 0 || fp_ptr->packet_num >= FT.total_parts) return;    // F4: bound the map key/index
 
     FT.LastContactTime = GetCurrentMs();
     FT.retry_count = 0;   // progress - rearm the give-up counter
-    auto fp_ptr = reinterpret_cast<const PopTBFilePartPacket*>(buffer);
 
     if (!FT.FilePartsRecv.count(fp_ptr->packet_num))
         FT.FilePartsRecv[fp_ptr->packet_num] = *fp_ptr;
@@ -1537,18 +1563,22 @@ void Pop3Network::filetransfer_client_process_file_part(const char * buffer)
     FT.Status = FileTransferStatus::Client_Receiving_Window;
 }
 
-void Pop3Network::filetransfer_client_process_window_complete(const char * buffer)
+void Pop3Network::filetransfer_client_process_window_complete(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
-    if (FT.Status == FileTransferStatus::Transfer_Complete)
+    // State gate doubles as a role gate (a host is never in a Client_* state);
+    // with the same-peer check it also closes F3 third-party abuse.
+    if (FT.Status != FileTransferStatus::Client_Waiting_On_Host_To_Start &&
+        FT.Status != FileTransferStatus::Client_Receiving_Window)
         return;
+    if (payload_len < sizeof(PopTBWindowComplete)) return;
+    if (FT.peer_port != peer_port || FT.peer_address != peer_address) return;
 
     FT.LastContactTime = GetCurrentMs();
 
     auto wc = reinterpret_cast<const PopTBWindowComplete*>(buffer);
     unsigned int ws = wc->window_start;
     unsigned int we = wc->window_end;
-    unsigned int wsize = we - ws;
 
     size_t total_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
 
@@ -1567,6 +1597,13 @@ void Pop3Network::filetransfer_client_process_window_complete(const char * buffe
         Pop3Debug::trace("File transfer complete!");
         return;
     }
+
+    // F1: reject a crafted/incoherent window BEFORE it drives received_bitmap[8]
+    // and the Send() payload size. window_start/window_end must be ordered, lie
+    // within the file, and span at most one max window (<=256 -> bitmap_ints<=8).
+    if (we < ws || we > total_parts || (we - ws) > FT_MAX_WINDOW_SIZE)
+        return;
+    unsigned int wsize = we - ws;
 
     // Build bitmap ACK for this window
     PopTBWindowAck ack = {};
@@ -1589,7 +1626,7 @@ void Pop3Network::filetransfer_client_process_window_complete(const char * buffe
     FT.Status = FileTransferStatus::Client_Receiving_Window;
 }
 
-void Pop3Network::filetransfer_host_process_window_ack(const char * buffer)
+void Pop3Network::filetransfer_host_process_window_ack(const char * peer_address, UWORD peer_port, const char * buffer, DWORD payload_len)
 {
     Poco::Mutex::ScopedLock lock(ft_mu);
     // Wire-driven: an ACK that arrives after the transfer ended (UDP
@@ -1598,11 +1635,17 @@ void Pop3Network::filetransfer_host_process_window_ack(const char * buffer)
         FT.Status != FileTransferStatus::Host_Waiting_On_Window_Ack &&
         FT.Status != FileTransferStatus::Host_Waiting_On_Client_To_Finish_Transfer)
         return;
+    if (payload_len < sizeof(unsigned int) * 2) return;                      // {window_start, window_size} prefix
+    if (FT.peer_port != peer_port || FT.peer_address != peer_address) return; // F3: sender auth
     FT.LastContactTime = GetCurrentMs();
 
     auto ack = reinterpret_cast<const PopTBWindowAck*>(buffer);
     unsigned int ws = ack->window_start;
     unsigned int wsize = ack->window_size;
+    if (wsize > FT_MAX_WINDOW_SIZE) wsize = FT_MAX_WINDOW_SIZE;               // F2: clamp span to bitmap capacity
+    if (ws > FT.total_parts) return;                                         // sane start
+    unsigned int bitmap_ints = (wsize + 31) / 32;
+    if (payload_len < sizeof(unsigned int) * 2 + sizeof(unsigned int) * bitmap_ints) return; // F2: no over-read of received_bitmap
     unsigned int window_end = (std::min)(ws + wsize, FT.total_parts);
 
     // Count missing

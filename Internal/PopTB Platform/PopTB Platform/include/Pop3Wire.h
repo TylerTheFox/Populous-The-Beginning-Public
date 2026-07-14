@@ -209,6 +209,9 @@ struct LevelSyncCrcs
     unsigned int Constants;  // levels/constant.dat (P3CONST_ balance table)
     unsigned int ObjectBank; // objects/objs0-<c>.dat picked by header ObjectsBankNum
                              // (sim: building placement/footprint, creature altitude)
+    unsigned int CpAttribs;            // D1: CPATRnnn.DAT (CP starting units + AI attribute table)
+    unsigned int Shapes;               // D3: objects/shapes.dat (building footprints)
+    unsigned int ObjectBankCompanions; // D2: facs0/pnts0/morph0-<c> (debris Thing counts + G_RANDOM stream)
 };
 
 // Turn-1 compatibility manifest (2026-07-13 beta incident: the lobby let
@@ -352,9 +355,9 @@ struct ServerChangePacket
 // ---- layout pins ------------------------------------------------------------
 // Sizes as produced by 32-bit MSVC natural alignment - the wire truth. Any
 // compiler/platform/arch that disagrees fails HERE, not on the wire.
-static_assert(sizeof(LevelSyncCrcs) == 24, "LevelSyncCrcs wire size");
-static_assert(sizeof(PeerCompatManifest) == 44, "PeerCompatManifest wire size");
-static_assert(sizeof(ClientManifestPacket) == 48, "ClientManifestPacket wire size");
+static_assert(sizeof(LevelSyncCrcs) == 36, "LevelSyncCrcs wire size");
+static_assert(sizeof(PeerCompatManifest) == 56, "PeerCompatManifest wire size");
+static_assert(sizeof(ClientManifestPacket) == 60, "ClientManifestPacket wire size");
 static_assert(sizeof(PingPacket) == 2, "PingPacket wire size");
 static_assert(sizeof(PingDataPacket) == 22, "PingDataPacket wire size");
 static_assert(sizeof(ClientChangeReqPacket) == 2, "ClientChangeReqPacket wire size");
@@ -365,7 +368,7 @@ static_assert(sizeof(ServerQuittingPacket) == 8, "ServerQuittingPacket wire size
 static_assert(sizeof(ClientLevelDenyPacket) == 8, "ClientLevelDenyPacket wire size");
 static_assert(sizeof(ClientRequestSyncPacket) == 8, "ClientRequestSyncPacket wire size");
 static_assert(sizeof(ResyncDataPacket) == 412, "ResyncDataPacket wire size");
-static_assert(sizeof(ServerLevelPacket) == 200, "ServerLevelPacket wire size");
+static_assert(sizeof(ServerLevelPacket) == 224, "ServerLevelPacket wire size");
 
 #if POP3WIRE_SYNC_CHECKING && POP3WIRE_LARGE_SYNC_CHECKING
 static_assert(sizeof(NetworkPacket) == 52, "NetworkPacket wire size (dev flavor)");
