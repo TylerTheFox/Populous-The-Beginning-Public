@@ -389,11 +389,27 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
 
     // Create D3D9 device via Pop3Screen (windowed mode by default)
     bool windowed = (flags & LB_SCREEN_MODE_WINDOWED) != 0;
+    bool borderless = windowed && (flags & LB_SCREEN_MODE_BORDERLESS) != 0;
 
-    // Adjust window style for windowed vs fullscreen
-    if (windowed)
+    // Adjust window style: borderless vs bordered-window vs exclusive
+    if (borderless)
     {
-        DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+        // ddraw.ini fullscreen=true: borderless fullscreen - a desktop-size
+        // WS_POPUP window over a WINDOWED device (Pop3Screen::create takes
+        // the backbuffer size from this client rect). Never exclusive:
+        // desktop size is always presentable, so there is no display-mode
+        // enumeration failure path.
+        SetWindowLongA(_lbhWndMain, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(_lbhWndMain, HWND_TOP, 0, 0,
+            GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+    else if (windowed)
+    {
+        // ddraw.ini border=false keeps the scaled window but drops the
+        // caption/frame styles.
+        DWORD style = ((flags & LB_SCREEN_MODE_NO_BORDER)
+                           ? WS_POPUP : WS_OVERLAPPEDWINDOW) | WS_VISIBLE;
         SetWindowLongA(_lbhWndMain, GWL_STYLE, style);
 
         // Scale the window up so the game isn't tiny on modern monitors.
@@ -423,7 +439,7 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
 
     if (!Pop3Screen::isReady())
     {
-        if (!Pop3Screen::create(_lbhWndMain, nWidth, nHeight, windowed))
+        if (!Pop3Screen::create(_lbhWndMain, nWidth, nHeight, windowed, borderless))
         {
             free(_lbFrontSurface.SurfaceArea.mpData);
             free(_lbBackSurface.SurfaceArea.mpData);

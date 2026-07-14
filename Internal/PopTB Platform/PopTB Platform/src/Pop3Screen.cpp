@@ -117,14 +117,14 @@ static const DWORD SCREEN_FVF = D3DFVF_XYZRHW | D3DFVF_TEX1;
 //  Lifecycle
 // ---------------------------------------------------------------
 
-bool Pop3Screen::create(void* hWnd, int backbufferWidth, int backbufferHeight, bool windowed)
+bool Pop3Screen::create(void* hWnd, int backbufferWidth, int backbufferHeight, bool windowed, bool borderless)
 {
     s_hWnd = hWnd;
     s_framebufferWidth = backbufferWidth;
     s_framebufferHeight = backbufferHeight;
     s_windowed = windowed;
-    s_fullscreen = !windowed;
-    s_border = windowed;
+    s_fullscreen = !windowed || borderless;
+    s_border = windowed && !borderless;
 
     // In windowed mode, set the D3D9 backbuffer to the window's client size
     // so our point-filtered quad handles the upscaling (not the GPU driver).
@@ -795,28 +795,36 @@ void Pop3Screen::toggleFullscreen()
 
     releaseDevice();
 
-    s_windowed = !s_windowed;
-    s_fullscreen = !s_windowed;
+    // "Fullscreen" here is BORDERLESS: a desktop-size WS_POPUP window over
+    // a WINDOWED device. Never request an exclusive device from this
+    // toggle - the stale (drag-resized) backbuffer size is generally not
+    // an enumerable display mode, and the exclusive CreateDevice failure
+    // path is a hard exit. Toggling out of an exclusive-fullscreen startup
+    // (ddraw.ini windowed=false) also lands on the windowed device.
+    s_fullscreen = !s_fullscreen;
+    s_windowed = true;
 
     HWND hWnd = (HWND)s_hWnd;
 
-    if (s_windowed)
+    if (!s_fullscreen)
     {
         DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
         SetWindowLongPtr(hWnd, GWL_STYLE, style);
 
         // Scale the game up to a comfortable integer multiple that fits
-        // the screen, matching the logic in LbScreen_SetMode.
+        // the screen, matching the logic in LbScreen_SetMode. Guard the
+        // framebuffer dims: matchWindowSizeToBackbuffer zeroes them for a
+        // frame after a resize, and 0 would spin this loop forever.
         int deskW = GetSystemMetrics(SM_CXSCREEN);
         int deskH = GetSystemMetrics(SM_CYSCREEN);
+        int fbW = (s_framebufferWidth  > 0) ? s_framebufferWidth  : 640;
+        int fbH = (s_framebufferHeight > 0) ? s_framebufferHeight : 480;
         int scale = 1;
-        while ((int)s_framebufferWidth  * (scale + 1) <= deskW * 9 / 10 &&
-               (int)s_framebufferHeight * (scale + 1) <= deskH * 9 / 10)
+        while (fbW * (scale + 1) <= deskW * 9 / 10 &&
+               fbH * (scale + 1) <= deskH * 9 / 10)
             scale++;
 
-        RECT rc = { 0, 0,
-                    (LONG)(s_framebufferWidth * scale),
-                    (LONG)(s_framebufferHeight * scale) };
+        RECT rc = { 0, 0, (LONG)(fbW * scale), (LONG)(fbH * scale) };
         AdjustWindowRect(&rc, style, FALSE);
         int winW = rc.right - rc.left;
         int winH = rc.bottom - rc.top;
@@ -824,16 +832,32 @@ void Pop3Screen::toggleFullscreen()
             (deskW - winW) / 2, (deskH - winH) / 2, winW, winH,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         s_border = true;
+
+        // Re-take the backbuffer from the REAL client rect now; waiting
+        // for matchWindowSizeToBackbuffer next frame would present the
+        // first frame driver-stretched at the stale fullscreen size.
+        RECT crc;
+        if (GetClientRect(hWnd, &crc) &&
+            crc.right > crc.left && crc.bottom > crc.top)
+        {
+            s_backbufferWidth = crc.right - crc.left;
+            s_backbufferHeight = crc.bottom - crc.top;
+        }
     }
     else
     {
+        int deskW = GetSystemMetrics(SM_CXSCREEN);
+        int deskH = GetSystemMetrics(SM_CYSCREEN);
         SetWindowLongPtr(hWnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
         SetWindowPos(hWnd, HWND_TOPMOST,
-            0, 0,
-            GetSystemMetrics(SM_CXSCREEN),
-            GetSystemMetrics(SM_CYSCREEN),
+            0, 0, deskW, deskH,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         s_border = false;
+
+        // Desktop-size backbuffer: always presentable on a windowed
+        // device, so the exclusive-mode failure path is unreachable.
+        s_backbufferWidth = deskW;
+        s_backbufferHeight = deskH;
     }
 
     createDevice();

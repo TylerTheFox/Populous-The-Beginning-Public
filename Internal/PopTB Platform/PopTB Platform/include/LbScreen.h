@@ -87,6 +87,8 @@ TbPaletteEntry * LbScreen_GetPaletteEntries(TbPaletteEntry *palette, UINT first,
 #define	LB_SCREEN_MODE_NO_CHEAP_FLIP	0x00000004 // Use flip page and do it properly in DOS
 #define	LB_SCREEN_3D					0x00000008 // Enable 3D
 #define	LB_SCREEN_MODE_WINDOWED			0x00000010 // Enable drawing to a window
+#define	LB_SCREEN_MODE_BORDERLESS		0x00000020 // Borderless fullscreen: desktop-size WS_POPUP window over a WINDOWED device (use with LB_SCREEN_MODE_WINDOWED)
+#define	LB_SCREEN_MODE_NO_BORDER		0x00000040 // Windowed with no caption/frame styles
 TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, const TbPalette *lpPalette);
 
 

@@ -114,6 +114,7 @@ static_assert(sizeof(PW_U8) == 1 && sizeof(PW_S16) == 2 && sizeof(PW_U16) == 2, 
 #define	CLIENT_LEVEL_DENY_PACKET					(26)	// client sends this when he hasn't got the required level
 #define CLIENT_TOGGLE_ALLIANCE                      (27)    // Information packet saying the player toggled an alliance
 #define CLIENT_REQUEST_SYNC_PACKET					(28)	// client asks host to send the level's referenced files
+#define CLIENT_MANIFEST_PACKET						(29)	// turn-1 compat gate: client announces its PeerCompatManifest
 
 #define	PACKET_COMPRESS_FLAG						(1<<7)	// set if packet is compressed
 
@@ -210,6 +211,58 @@ struct LevelSyncCrcs
                              // (sim: building placement/footprint, creature altitude)
 };
 
+// Turn-1 compatibility manifest (2026-07-13 beta incident: the lobby let
+// incompatible peers start and every player OOS'd on turn 1). Everything a
+// peer must agree on BEFORE the host may start, beyond the exact-build join
+// gate - which cannot see the game's CM_ compile flags (Beta and Release,
+// with or without ONLINE_CHEATS, share one platform-lib config byte), the
+// data-file CRCs or the feature bits. Every non-host client announces its
+// manifest on the 500ms lobby cadence (ClientManifestPacket); the host's
+// own manifest rides at the end of ServerLevelPacket. The host refuses
+// START on any HARD-axis mismatch; OptionsSig is DIAGNOSTIC-ONLY (the
+// START packet force-pushes lobby options, so a pre-start mismatch there
+// is transient by design and must never hard-gate).
+
+// PeerCompatManifest.BuildConfig - game-provided compile config. The
+// transport's join byte (POP3_BUILD_CONFIG_ID) only sees Debug-vs-Release;
+// this one distinguishes all three game configs.
+#define PCM_CONFIG_DEVELOP           (1)
+#define PCM_CONFIG_BETA              (2)
+#define PCM_CONFIG_RELEASE           (3)
+
+// PeerCompatManifest.ConfigFlags - sim-affecting compile toggles that two
+// same-flavor builds can still disagree on. The GAME folds these from its
+// Build.h (fill_peer_compat_manifest, Level.cpp); the platform lib cannot
+// see CM_*.
+#define PCM_FLAG_ONLINE_CHEATS       (1<<0)  // CM_ONLINE_CHEATS (cheats live online)
+#define PCM_FLAG_SCRIPT_BOUNDS_CHECK (1<<1)  // CM_SCRIPT_BOUNDS_CHECK (script3 interpreter)
+#define PCM_FLAG_DEBUG_RANDOM_SEED   (1<<2)  // CM_DEBUG_RANDOM_SEED (extra PRNG draws)
+#define PCM_FLAG_DEBUG_DESYNC        (1<<3)  // DEBUG_DESYNC (Io/Snapshots instrumentation)
+#define PCM_FLAG_SP_SYNC_CHECKING    (1<<4)  // CM_SINGLE_PLAYER_SYNC_CHECKING
+
+struct PeerCompatManifest
+{
+    PW_U8  Major;        // MAJOR_VERSION
+    PW_U8  Minor;        // MINOR_VERSION
+    PW_U16 Build;        // BUILD_NUMBER
+    PW_U8  ArchBits;     // 8 * sizeof(void*): 32 or 64
+    PW_U8  BuildConfig;  // PCM_CONFIG_*
+    PW_U8  ConfigFlags;  // PCM_FLAG_* bitfield
+    PW_U8  Pad;
+    PW_U32 FeatureBits;  // FeatureSystem bits 0..POP3WIRE_FEATURE_COUNT-1
+    struct LevelSyncCrcs Crcs; // level identity (level_sync_crcs); all 0 = no level yet
+    PW_S16 Level;        // lobby level number (-1 = none announced yet)
+    PW_U16 Pad2;
+    PW_U32 OptionsSig;   // CRC of lobby options - diagnostic only, NEVER hard-gated
+};
+
+struct ClientManifestPacket
+{
+    PW_U8 PacketType;
+    PW_U8 Pad[3];
+    struct PeerCompatManifest Manifest;
+};
+
 struct ServerLevelPacket
 {
     PW_U8   PacketType;
@@ -229,6 +282,9 @@ struct ServerLevelPacket
     // hostbot) -> clients skip the compare. Wire-format growth is safe: the
     // join handshake requires exact MAJOR/MINOR/BUILD equality.
     struct LevelSyncCrcs LevelCrcs;
+    // Turn-1 compat gate: the HOST's own manifest, compared client-side on
+    // the axes that cannot self-heal (belt-and-braces vs a stale host).
+    struct PeerCompatManifest HostManifest;
 };
 
 struct ResyncDataPacket
@@ -297,6 +353,8 @@ struct ServerChangePacket
 // Sizes as produced by 32-bit MSVC natural alignment - the wire truth. Any
 // compiler/platform/arch that disagrees fails HERE, not on the wire.
 static_assert(sizeof(LevelSyncCrcs) == 24, "LevelSyncCrcs wire size");
+static_assert(sizeof(PeerCompatManifest) == 44, "PeerCompatManifest wire size");
+static_assert(sizeof(ClientManifestPacket) == 48, "ClientManifestPacket wire size");
 static_assert(sizeof(PingPacket) == 2, "PingPacket wire size");
 static_assert(sizeof(PingDataPacket) == 22, "PingDataPacket wire size");
 static_assert(sizeof(ClientChangeReqPacket) == 2, "ClientChangeReqPacket wire size");
@@ -307,7 +365,7 @@ static_assert(sizeof(ServerQuittingPacket) == 8, "ServerQuittingPacket wire size
 static_assert(sizeof(ClientLevelDenyPacket) == 8, "ClientLevelDenyPacket wire size");
 static_assert(sizeof(ClientRequestSyncPacket) == 8, "ClientRequestSyncPacket wire size");
 static_assert(sizeof(ResyncDataPacket) == 412, "ResyncDataPacket wire size");
-static_assert(sizeof(ServerLevelPacket) == 156, "ServerLevelPacket wire size");
+static_assert(sizeof(ServerLevelPacket) == 200, "ServerLevelPacket wire size");
 
 #if POP3WIRE_SYNC_CHECKING && POP3WIRE_LARGE_SYNC_CHECKING
 static_assert(sizeof(NetworkPacket) == 52, "NetworkPacket wire size (dev flavor)");

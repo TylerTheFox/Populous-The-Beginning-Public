@@ -25,7 +25,9 @@ public:
 
     // Create the D3D9 device for the given window.
     // Call once after the HWND is created (LbScreen_Initialise).
-    static bool create(void* hWnd, int backbufferWidth, int backbufferHeight, bool windowed);
+    // borderless: the window was pre-shaped as a desktop-size WS_POPUP
+    // "fullscreen" window but the device stays WINDOWED (never exclusive).
+    static bool create(void* hWnd, int backbufferWidth, int backbufferHeight, bool windowed, bool borderless = false);
 
     // Tear down the D3D9 device and release all resources.
     static void destroy();
@@ -79,7 +81,9 @@ public:
     //  Display state
     // ---------------------------------------------------------------
 
-    // Toggle between windowed and fullscreen mode.
+    // Toggle between a bordered window and borderless fullscreen (a
+    // desktop-size WS_POPUP window over a WINDOWED device). This toggle
+    // never requests an exclusive device - see toggleFullscreen().
     static void toggleFullscreen();
 
     // Current render dimensions (output/window size after upscale).
