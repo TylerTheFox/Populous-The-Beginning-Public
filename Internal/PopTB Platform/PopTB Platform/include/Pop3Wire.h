@@ -368,7 +368,7 @@ static_assert(sizeof(ServerQuittingPacket) == 8, "ServerQuittingPacket wire size
 static_assert(sizeof(ClientLevelDenyPacket) == 8, "ClientLevelDenyPacket wire size");
 static_assert(sizeof(ClientRequestSyncPacket) == 8, "ClientRequestSyncPacket wire size");
 static_assert(sizeof(ResyncDataPacket) == 412, "ResyncDataPacket wire size");
-static_assert(sizeof(ServerLevelPacket) == 228, "ServerLevelPacket wire size"); // 2026-07-16: +4 FeatureSettings bytes (POP3WIRE_FEATURE_COUNT 25->29)
+static_assert(sizeof(ServerLevelPacket) == 228, "ServerLevelPacket wire size"); // 2026-07-16: +4 FeatureSettings bytes (POP3WIRE_FEATURE_COUNT 25->30; count 30 reuses the pad byte)
 
 #if POP3WIRE_SYNC_CHECKING && POP3WIRE_LARGE_SYNC_CHECKING
 static_assert(sizeof(NetworkPacket) == 52, "NetworkPacket wire size (dev flavor)");
