@@ -28,6 +28,22 @@ LB_EXTERN LbGlyphEmitFn          _lbpGlyphEmitHook;
 LB_EXTERN LbGlyphEmitOneColourFn _lbpGlyphEmitOneColourHook;
 
 //***************************************************************************
+// Phase K1: wide-glyph (CJK) provider. When non-NULL, Draw_Text and
+// Text_Measure offer every char >= 0x100 to this provider before the
+// sprite-bank fallback. A non-NULL sprite is emitted through the one-colour
+// glyph path (so the Phase T1 HW hook routes it into the HW overlay) with a
+// fixed advance of sprite->Width; NULL keeps the historical low-byte
+// truncation. The provider owns language gating and glyph storage (game
+// side: KanjiFont.cpp) - the platform stays language-agnostic.
+//***************************************************************************
+typedef const TbSprite* (LB_CALLBACK *LbWideGlyphFn)(UINT wch);
+LB_EXTERN LbWideGlyphFn _lbpWideGlyphHook;
+
+// pInit of the active font (the sprite-bank pointer LbDraw_SetTextFont was
+// given). The CJK provider uses it to map the active font to a glyph size.
+void* LbDraw_GetTextFontData();
+
+//***************************************************************************
 // LbDraw_CheapText : Draw the built-in quick text at the given byte surface
 //	void LbDraw_CheapText(SINT x, SINT y, const CHAR *pText);
 //***************************************************************************

@@ -11,6 +11,10 @@
 LbGlyphEmitFn          _lbpGlyphEmitHook          = NULL;
 LbGlyphEmitOneColourFn _lbpGlyphEmitOneColourHook = NULL;
 
+// Phase K1: wide-glyph (CJK) provider (see LbText.h). NULL = historical
+// low-byte truncation for chars >= 0x100.
+LbWideGlyphFn          _lbpWideGlyphHook          = NULL;
+
 //***************************************************************************
 // Static callback functions for TbTextRender
 //***************************************************************************
@@ -22,6 +26,9 @@ LbGlyphEmitOneColourFn _lbpGlyphEmitOneColourHook = NULL;
 // so callers must sanitize (see audio_ascii_fold in SoundManager.cpp).
 static void __cdecl SpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT cChar)
 {
+    // Chars > 0xFF used to index the bank raw (OOB read); truncate to the
+    // low byte so measurement matches what Draw_Text has always drawn.
+    if (cChar > 0xFF) cChar &= 0xFF;
     if (cChar < 32) { lpSize->Width = 0; lpSize->Height = 0; return; }
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     lpSize->Width = spr->Width;
@@ -30,6 +37,7 @@ static void __cdecl SpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT 
 
 static UINT __cdecl SpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT cChar, TbColour col)
 {
+    if (cChar > 0xFF) cChar &= 0xFF;    // see SpriteRender_OnMeasure
     if (cChar < 32) return 0;
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     if (_lbpGlyphEmitHook)
@@ -41,6 +49,7 @@ static UINT __cdecl SpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT c
 
 static void __cdecl OneColourSpriteRender_OnMeasure(void *pParam, Pop3Size *lpSize, UINT cChar)
 {
+    if (cChar > 0xFF) cChar &= 0xFF;    // see SpriteRender_OnMeasure
     if (cChar < 32) { lpSize->Width = 0; lpSize->Height = 0; return; }
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     lpSize->Width = spr->Width;
@@ -49,6 +58,7 @@ static void __cdecl OneColourSpriteRender_OnMeasure(void *pParam, Pop3Size *lpSi
 
 static UINT __cdecl OneColourSpriteRender_OnDrawChar(void *pParam, SINT x, SINT y, UINT cChar, TbColour col)
 {
+    if (cChar > 0xFF) cChar &= 0xFF;    // see SpriteRender_OnMeasure
     if (cChar < 32) return 0;
     const TbSprite *spr = &((const TbSprite*)pParam)[cChar - 32];
     if (_lbpGlyphEmitOneColourHook)
@@ -63,6 +73,13 @@ static UINT __cdecl OneColourSpriteRender_OnDrawChar(void *pParam, SINT x, SINT 
 //***************************************************************************
 const TbTextRender *_lbpCurrentFont;
 static void *_lbFontData;
+
+// pInit of the active font (the sprite-bank pointer LbDraw_SetTextFont was
+// given). The CJK glyph provider maps it to a 12/16/24 glyph size.
+void* LbDraw_GetTextFontData()
+{
+    return _lbFontData;
+}
 
 extern const TbTextRender _lbSpriteRender = {
     NULL,                              // OnSelect
@@ -273,6 +290,13 @@ static void Draw_CheapText(SINT x, SINT y, const CHARTYPE *pText, TbColour col)
 }
 
 //***************************************************************************
+// Widening helpers: TBCHAR strings must widen through UBYTE (a raw cast of
+// a negative char would sign-extend 128..255 into bogus wide codepoints).
+//***************************************************************************
+static inline UINT Text_CharValue(char c)    { return (UBYTE)c; }
+static inline UINT Text_CharValue(UNICHAR c) { return c; }
+
+//***************************************************************************
 // Draw_Text : Internal text rendering using current font callbacks
 //***************************************************************************
 template<typename CHARTYPE>
@@ -289,7 +313,29 @@ static void Draw_Text(SINT x, SINT y, const CHARTYPE *pText, TbColour col)
         }
         else
         {
-            UINT ch = (UBYTE)*pText++;
+            UINT ch = Text_CharValue(*pText++);
+            if (ch >= 0x100)
+            {
+                // Phase K1: CJK provider - full-codepoint glyph, fixed
+                // advance, emitted through the one-colour glyph path so the
+                // Phase T1 HW hook routes it into the HW overlay exactly
+                // like the ASCII sprite glyphs (per-pixel drawing would
+                // land UNDER the HW UI panel).
+                if (_lbpWideGlyphHook)
+                {
+                    const TbSprite *kspr = _lbpWideGlyphHook(ch);
+                    if (kspr)
+                    {
+                        if (_lbpGlyphEmitOneColourHook)
+                            _lbpGlyphEmitOneColourHook(x, y, kspr, col);
+                        else
+                            BfDraw_OneColourSprite(x, y, kspr, col);
+                        x += kspr->Width;
+                        continue;
+                    }
+                }
+                ch &= 0xFF;     // historical fallback: draw the low-byte glyph
+            }
             x += _lbpCurrentFont->OnDrawChar(_lbFontData, x, y, ch, col);
         }
     }
@@ -321,7 +367,24 @@ static UINT Text_Measure(const CHARTYPE *pText, Pop3Size *lpSize)
         }
         else
         {
-            lineWidth += LbDraw_GetTextCharacterWidth(*pText);
+            UINT ch = Text_CharValue(*pText);
+            if (ch >= 0x100)
+            {
+                // Measure exactly what Draw_Text will draw: the CJK glyph
+                // when the provider serves one (fixed advance = its Width),
+                // else the truncated low-byte glyph. Before this fix the raw
+                // wchar went into the sprite-bank index = OOB read for any
+                // char > 255.
+                const TbSprite *kspr = _lbpWideGlyphHook ? _lbpWideGlyphHook(ch) : NULL;
+                if (kspr)
+                {
+                    lineWidth += kspr->Width;
+                    pText++;
+                    continue;
+                }
+                ch &= 0xFF;
+            }
+            lineWidth += LbDraw_GetTextCharacterWidth(ch);
         }
         pText++;
     }

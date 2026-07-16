@@ -6,6 +6,7 @@
 #include <SDL.h>
 #include "Pop3App.h"
 #include "Poco/File.h"
+#include "Poco/UnicodeConverter.h"
 #include <debugapi.h>
 #include <Poco/Format.h>
 
@@ -19,7 +20,11 @@ bool Pop3Debug::openLog(const std::string & file)
 {
     closeLog();
     _log = file;
-    _out.open(file, std::ios::trunc);
+    // UTF-8 path -> wide open: a narrow open goes through the ANSI
+    // codepage and silently fails under a non-ASCII profile directory.
+    std::wstring wfile;
+    Poco::UnicodeConverter::toUTF16(file, wfile);
+    _out.open(wfile, std::ios::trunc);
     return _out.is_open();
 }
 

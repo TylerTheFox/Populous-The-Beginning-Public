@@ -2,8 +2,19 @@
 #include <SFML/Audio.hpp>
 #include <SFML/Audio/PlaybackDevice.hpp>
 
+#include <Poco/UnicodeConverter.h>
+#include <filesystem>
 #include <string>
 #include <vector>
+
+// Game paths are UTF-8; fs::path built from char* would decode them with
+// the ANSI codepage (independent of the CRT locale), so widen first.
+static std::filesystem::path widenPath(const char* utf8)
+{
+	std::wstring wide;
+	Poco::UnicodeConverter::toUTF16(std::string(utf8), wide);
+	return std::filesystem::path(wide);
+}
 
 static sf::SoundBuffer* asBuffer(void* p) { return static_cast<sf::SoundBuffer*>(p); }
 static sf::Sound*       asSound(void* p)  { return static_cast<sf::Sound*>(p); }
@@ -54,7 +65,7 @@ Pop3SoundBuffer& Pop3SoundBuffer::operator=(Pop3SoundBuffer&& other) noexcept
 
 bool Pop3SoundBuffer::loadFromFile(const char* path)
 {
-	return asBuffer(impl)->loadFromFile(path);
+	return asBuffer(impl)->loadFromFile(widenPath(path));
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +185,7 @@ bool Pop3MusicStream::openFromFile(const char* path)
 {
 	if (!impl)
 		impl = new sf::Music();
-	return asMusic(impl)->openFromFile(path);
+	return asMusic(impl)->openFromFile(widenPath(path));
 }
 
 void Pop3MusicStream::play()

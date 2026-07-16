@@ -12,6 +12,7 @@
 #include  <Poco/Net/IPAddress.h>
 #include  <Poco/SHA1Engine.h>
 #include  <Poco/RandomStream.h>
+#include  <Poco/UnicodeConverter.h>
 #include  <cstring>
 
 const std::string Pop3Network::tribes[] = { "Blue", "Red", "Yellow", "Green", "Cyan", "Pink", "Black", "Orange", "Neutral", "Spectator" };
@@ -1414,7 +1415,10 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
 void Pop3Network::compile_fileparts()
 {
     size_t number_of_parts = static_cast<size_t>(ceil(static_cast<double>(FT.FileHeader.file_size) / static_cast<double>(PART_PACKET_DATA_SIZE)));
-    std::ofstream out(Poco::Path::temp() + "\\pop.dat", std::ios::trunc | std::ios::binary);
+    // temp dir contains the (possibly non-ASCII) username - open wide
+    std::wstring wtmp;
+    Poco::UnicodeConverter::toUTF16(Poco::Path::temp() + "\\pop.dat", wtmp);
+    std::ofstream out(wtmp, std::ios::trunc | std::ios::binary);
     if (out.is_open())
     {
         for (size_t i = 0; i + 1 < number_of_parts; i++)
