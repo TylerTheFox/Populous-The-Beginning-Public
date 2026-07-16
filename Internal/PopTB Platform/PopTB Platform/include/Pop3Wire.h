@@ -68,7 +68,7 @@ static_assert(sizeof(PW_U8) == 1 && sizeof(PW_S16) == 2 && sizeof(PW_U16) == 2, 
 #define POP3WIRE_GAME_NUMBER_PLAYERS      (10)  // == GAME_NUMBER_PLAYERS (8 + 1 spectator slot + 1 engine/hostbot)
 #define POP3WIRE_NETWORK_NUMBER_PLAYERS   (10)  // == NETWORK_NUMBER_PLAYERS
 #define POP3WIRE_MAX_LEVEL_NAME_LENGTH    (32)  // == MAX_LEVEL_NAME_LENGTH
-#define POP3WIRE_FEATURE_COUNT            (29)  // == FEATURE_ENUM_MAX_SIZE - bump when adding a _FEATURE
+#define POP3WIRE_FEATURE_COUNT            (30)  // == FEATURE_ENUM_MAX_SIZE - bump when adding a _FEATURE
 #if POP3WIRE_LARGE_SYNC_CHECKING
 #define POP3WIRE_MAX_NUM_CHECKSUMS        (8)   // == MAX_NUM_CHECKSUMS (dev flavor)
 #else
