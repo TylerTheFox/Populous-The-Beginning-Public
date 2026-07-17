@@ -115,6 +115,7 @@ static_assert(sizeof(PW_U8) == 1 && sizeof(PW_S16) == 2 && sizeof(PW_U16) == 2, 
 #define CLIENT_TOGGLE_ALLIANCE                      (27)    // Information packet saying the player toggled an alliance
 #define CLIENT_REQUEST_SYNC_PACKET					(28)	// client asks host to send the level's referenced files
 #define CLIENT_MANIFEST_PACKET						(29)	// turn-1 compat gate: client announces its PeerCompatManifest
+#define CLIENT_SEED_ACK_PACKET						(30)	// 0000530: client echoes the seed it applied from the host's START
 
 #define	PACKET_COMPRESS_FLAG						(1<<7)	// set if packet is compressed
 
@@ -266,6 +267,19 @@ struct ClientManifestPacket
     struct PeerCompatManifest Manifest;
 };
 
+// 0000530: pre-game seed handshake. A client echoes the RAW seed it applied
+// from the host's START packet (before its own MULTIFLAG_GUEST_RANDOM level-load
+// mutation) so the host can confirm every peer applied the same seed BEFORE the
+// sim runs, instead of only catching a mis-applied seed reactively via the
+// turn-1 OOS checksum (PKT_CHK_SEED). Additive - the exact-build join gate
+// pins MAJOR/MINOR/BUILD so every connected peer understands this type.
+struct ClientSeedAckPacket
+{
+    PW_U8  PacketType;
+    PW_U8  Pad[3];
+    PW_S32 Seed;   // raw seed the client applied from START (echoed to host)
+};
+
 struct ServerLevelPacket
 {
     PW_U8   PacketType;
@@ -358,6 +372,7 @@ struct ServerChangePacket
 static_assert(sizeof(LevelSyncCrcs) == 36, "LevelSyncCrcs wire size");
 static_assert(sizeof(PeerCompatManifest) == 56, "PeerCompatManifest wire size");
 static_assert(sizeof(ClientManifestPacket) == 60, "ClientManifestPacket wire size");
+static_assert(sizeof(ClientSeedAckPacket) == 8, "ClientSeedAckPacket wire size");
 static_assert(sizeof(PingPacket) == 2, "PingPacket wire size");
 static_assert(sizeof(PingDataPacket) == 22, "PingDataPacket wire size");
 static_assert(sizeof(ClientChangeReqPacket) == 2, "ClientChangeReqPacket wire size");
