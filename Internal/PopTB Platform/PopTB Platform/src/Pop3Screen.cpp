@@ -25,6 +25,7 @@ Pop3ScreenCallback  Pop3Screen::s_overlayCallback    = nullptr;
 Pop3ScreenCallback  Pop3Screen::s_hwUiOverlayCallback = nullptr;
 Pop3ScreenCallback  Pop3Screen::s_deviceInitCallback = nullptr;
 Pop3ScreenCallback  Pop3Screen::s_deviceDeinitCallback = nullptr;
+Pop3ScreenCallback  Pop3Screen::s_deviceDestroyCallback = nullptr;
 
 void*               Pop3Screen::s_hWnd               = nullptr;
 int                 Pop3Screen::s_backbufferWidth     = 0;
@@ -161,7 +162,11 @@ bool Pop3Screen::create(void* hWnd, int backbufferWidth, int backbufferHeight, b
 
 void Pop3Screen::destroy()
 {
-    if (s_deviceDeinitCallback)
+    // Full device teardown (see toggleFullscreen): use the destroy callback so
+    // every device-owned resource is released, not just the DEFAULT pool.
+    if (s_deviceDestroyCallback)
+        s_deviceDestroyCallback();
+    else if (s_deviceDeinitCallback)
         s_deviceDeinitCallback();
 
     releaseDevice();
@@ -771,6 +776,11 @@ void Pop3Screen::setDeviceDeinitCallback(Pop3ScreenCallback cb)
     s_deviceDeinitCallback = cb;
 }
 
+void Pop3Screen::setDeviceDestroyCallback(Pop3ScreenCallback cb)
+{
+    s_deviceDestroyCallback = cb;
+}
+
 // ---------------------------------------------------------------
 //  D3D9 device access
 // ---------------------------------------------------------------
@@ -789,18 +799,17 @@ void Pop3Screen::toggleFullscreen()
     if (!s_pDevice || !s_pD3D)
         return;
 
-    // Notify deinit
-    if (s_deviceDeinitCallback)
-        s_deviceDeinitCallback();
-
-    releaseDevice();
-
     // "Fullscreen" here is BORDERLESS: a desktop-size WS_POPUP window over
-    // a WINDOWED device. Never request an exclusive device from this
-    // toggle - the stale (drag-resized) backbuffer size is generally not
-    // an enumerable display mode, and the exclusive CreateDevice failure
-    // path is a hard exit. Toggling out of an exclusive-fullscreen startup
-    // (ddraw.ini windowed=false) also lands on the windowed device.
+    // a WINDOWED device. Both states are Windowed=TRUE devices that differ
+    // only in window style and backbuffer size, so we change the window and
+    // then RESET the existing device to the new size - the same proven path
+    // as matchWindowSizeToBackbuffer. A Reset PRESERVES MANAGED textures and
+    // compiled shaders; a full releaseDevice()+createDevice() would destroy
+    // them, which both crashed on the stale kept-pointers (onDeviceLost keeps
+    // MANAGED/shaders across a Reset) AND left the land atlas / tex cache
+    // empty because they had to repopulate from scratch. Never request an
+    // exclusive device here - the client-size backbuffer is generally not an
+    // enumerable display mode and the exclusive path is a hard exit.
     s_fullscreen = !s_fullscreen;
     s_windowed = true;
 
@@ -860,9 +869,54 @@ void Pop3Screen::toggleFullscreen()
         s_backbufferHeight = deskH;
     }
 
-    createDevice();
+    // Release DEFAULT-pool resources (Reset-grade: MANAGED textures + shaders
+    // survive), then Reset the device to the new backbuffer size. Mirrors
+    // matchWindowSizeToBackbuffer.
+    if (s_deviceDeinitCallback)
+        s_deviceDeinitCallback();
 
-    // Notify init
+    if (s_pFramebufferTex)
+    {
+        s_pFramebufferTex->Release();
+        s_pFramebufferTex = nullptr;
+        // Force a re-create at the next present() so dims are re-taken.
+        s_framebufferWidth = 0;
+        s_framebufferHeight = 0;
+    }
+    if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
+
+    D3DPRESENT_PARAMETERS pp;
+    ZeroMemory(&pp, sizeof(pp));
+    pp.Windowed = TRUE;
+    pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    pp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    pp.BackBufferWidth = s_backbufferWidth;
+    pp.BackBufferHeight = s_backbufferHeight;
+    pp.BackBufferCount = 2;
+    pp.hDeviceWindow = (HWND)s_hWnd;
+    pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+    pp.EnableAutoDepthStencil = TRUE;
+    pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+
+    HRESULT hr = s_pDevice->Reset(&pp);
+    if (FAILED(hr))
+    {
+        // Reset rejected the new mode (rare - e.g. a driver that dislikes the
+        // desktop-size windowed backbuffer). Fall back to a full device
+        // rebuild so we stay alive: the DESTROY callback releases EVERY
+        // device-owned resource (MANAGED textures + shaders too) so nothing
+        // dangles, then createDevice() makes a fresh device. Land caches
+        // repopulate lazily on the next frames.
+        if (s_deviceDestroyCallback)
+            s_deviceDestroyCallback();
+        else if (s_deviceDeinitCallback)
+            s_deviceDeinitCallback();
+        releaseDevice();
+        createDevice();
+    }
+
+    // Notify init (rebinds ImGui and other per-device consumers to the live
+    // device; fires for both the Reset and the rebuild fallback).
     if (s_deviceInitCallback)
         s_deviceInitCallback();
 }
@@ -951,11 +1005,17 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
     {
         s_pFramebufferTex->Release();
         s_pFramebufferTex = nullptr;
-        if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
-        // Force a re-create at the next present() so dims are re-taken.
-        s_framebufferWidth = 0;
-        s_framebufferHeight = 0;
     }
+    // s_pIndexTex release and the dim-reset must NOT be nested under
+    // s_pFramebufferTex: in the default GPU-palette config present() takes the
+    // index-texture branch and never creates s_pFramebufferTex, so the live
+    // DEFAULT-pool s_pIndexTex would otherwise survive into Reset() and make it
+    // fail with D3DERR_INVALIDCALL (silent driver-stretch fallback). Match the
+    // toggleFullscreen / handleDeviceLost paths, which release it unconditionally.
+    if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
+    // Force a re-create at the next present() so dims are re-taken.
+    s_framebufferWidth = 0;
+    s_framebufferHeight = 0;
 
     D3DPRESENT_PARAMETERS pp;
     ZeroMemory(&pp, sizeof(pp));

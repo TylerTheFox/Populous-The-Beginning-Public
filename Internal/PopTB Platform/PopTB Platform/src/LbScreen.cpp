@@ -319,12 +319,23 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     if ((flags & (LB_SCREEN_MODE_SWAP | LB_SCREEN_MODE_FLIP)) == 0)
         return LB_ERROR;
 
+    // Window/device mode from the flags (borderless implies the windowed
+    // flag). Computed here so the availability gate below can be scoped to the
+    // one mode that needs it.
+    const bool windowed   = (flags & LB_SCREEN_MODE_WINDOWED) != 0;
+    const bool borderless = windowed && (flags & LB_SCREEN_MODE_BORDERLESS) != 0;
+
     _CBINFO cbRestore(_CBINFO::POINTER_BACKUP, (ULONG)0);
     _LbGCBS.EventNotification(LBCB_POINTER_CB_EVENT, &cbRestore);
 
     ReleaseMode();
 
-    if (!LbScreen_IsModeAvailable(nWidth, nHeight, nDepth))
+    // Only EXCLUSIVE fullscreen requires an enumerable display mode. Windowed
+    // and borderless are Windowed=TRUE D3D devices that present at any client
+    // (or desktop) size, so gating them on the game resolution being an
+    // enumerated mode would wrongly fail startup on systems that don't
+    // enumerate e.g. 640x480x32.
+    if (!windowed && !LbScreen_IsModeAvailable(nWidth, nHeight, nDepth))
         return LB_ERROR;
 
     if (_lbhWndCreated)
@@ -387,10 +398,8 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     _InitialiseSurface(&_lbFrontSurface, nWidth, nHeight, nDepth, flags);
     _InitialiseSurface(&_lbBackSurface, nWidth, nHeight, nDepth, flags);
 
-    // Create D3D9 device via Pop3Screen (windowed mode by default)
-    bool windowed = (flags & LB_SCREEN_MODE_WINDOWED) != 0;
-    bool borderless = windowed && (flags & LB_SCREEN_MODE_BORDERLESS) != 0;
-
+    // Create D3D9 device via Pop3Screen. `windowed` / `borderless` were
+    // resolved from the flags above (near the availability gate).
     // Adjust window style: borderless vs bordered-window vs exclusive
     if (borderless)
     {

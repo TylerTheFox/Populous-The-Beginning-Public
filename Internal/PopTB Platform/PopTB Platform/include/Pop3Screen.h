@@ -69,6 +69,13 @@ public:
     // used for ImGui device setup/teardown.
     static void setDeviceInitCallback(Pop3ScreenCallback cb);
     static void setDeviceDeinitCallback(Pop3ScreenCallback cb);
+    // Full device destroy (toggleFullscreen / destroy) vs the Reset-grade
+    // deinit callback above. Fired instead of the deinit callback on paths
+    // that Release() the device outright, so the game can release EVERY
+    // device-owned resource (MANAGED textures + shaders too), not just the
+    // DEFAULT-pool ones a Reset invalidates. Falls back to the deinit callback
+    // when unset.
+    static void setDeviceDestroyCallback(Pop3ScreenCallback cb);
 
     // ---------------------------------------------------------------
     //  D3D9 device access
@@ -161,6 +168,7 @@ private:
     static Pop3ScreenCallback   s_hwUiOverlayCallback;  // Phase 11
     static Pop3ScreenCallback   s_deviceInitCallback;
     static Pop3ScreenCallback   s_deviceDeinitCallback;
+    static Pop3ScreenCallback   s_deviceDestroyCallback;
 
     static void*                s_hWnd;
     static int                  s_backbufferWidth;
