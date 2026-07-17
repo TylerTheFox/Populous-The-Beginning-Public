@@ -327,16 +327,18 @@ Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam w
             _mousePos.X = GET_X_LPARAM(lParam);
             _mousePos.Y = GET_Y_LPARAM(lParam);
 
-            // Check mouse coords.
+            // Check mouse coords. Clamp to the LAST valid pixel (ScreenW-1 /
+            // ScreenH-1); clamping to ScreenW/ScreenH parks the cursor one pixel
+            // off-screen on the edge-scroll threshold -> "sticks at edge".
             if (_mousePos.X < 0)
                 _mousePos.X = 0;
-            else if (_mousePos.X > *_ptrs.ScreenW)
-                _mousePos.X = *_ptrs.ScreenW;
+            else if (_mousePos.X > *_ptrs.ScreenW - 1)
+                _mousePos.X = *_ptrs.ScreenW - 1;
 
             if (_mousePos.Y < 0)
                 _mousePos.Y = 0;
-            else if (_mousePos.Y > *_ptrs.ScreenH)
-                _mousePos.Y = *_ptrs.ScreenH;
+            else if (_mousePos.Y > *_ptrs.ScreenH - 1)
+                _mousePos.Y = *_ptrs.ScreenH - 1;
         }
         return 0;
     case WM_INPUT:
@@ -364,20 +366,24 @@ Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam w
         case RIM_TYPEMOUSE:
             if (!_UseWindowsMessages)
             {
-                // Update Pointer Position
+                // Update Pointer Position (raw relative deltas accumulate here)
                 _mousePos.X += raw->data.mouse.lLastX;
                 _mousePos.Y += raw->data.mouse.lLastY;
 
-                // Check mouse coords.
+                // Check mouse coords. Clamp to the LAST valid pixel (ScreenW-1 /
+                // ScreenH-1); clamping to ScreenW/ScreenH parks the cursor one
+                // pixel off-screen on the edge-scroll threshold, and since raw
+                // deltas keep arriving while the OS pointer is clipped, the map
+                // edge-scrolls forever -> "mouse sticks at edge and keeps moving".
                 if (_mousePos.X < 0)
                     _mousePos.X = 0;
-                else if (_mousePos.X > *_ptrs.ScreenW)
-                    _mousePos.X = *_ptrs.ScreenW;
+                else if (_mousePos.X > *_ptrs.ScreenW - 1)
+                    _mousePos.X = *_ptrs.ScreenW - 1;
 
                 if (_mousePos.Y < 0)
                     _mousePos.Y = 0;
-                else if (_mousePos.Y > *_ptrs.ScreenH)
-                    _mousePos.Y = *_ptrs.ScreenH;
+                else if (_mousePos.Y > *_ptrs.ScreenH - 1)
+                    _mousePos.Y = *_ptrs.ScreenH - 1;
             }
 
             // Check Mouse Buttons
