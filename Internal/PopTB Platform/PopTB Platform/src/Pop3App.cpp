@@ -283,6 +283,13 @@ static void releaseCursorClip()
 // makes the window jump or stick.
 static bool _inSizeMove = false;
 
+// Ticket 0000712: keys.cpp lives in the game layer, which is linked into
+// this same executable. Forward-declare load_keymap here rather than pull
+// game headers across the PopTB Platform submodule boundary. The signature
+// matches keys.h's `void load_keymap(SLONG kc)` — SLONG is `signed long`,
+// which is the same type (and mangling) as `long`.
+extern void load_keymap(long kc);
+
 Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam)
 {
     HWND hWnd = (HWND)hwnd;
@@ -294,11 +301,30 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
     case WM_INPUT:
         return Pop3Input::ProcessEvent(hwnd, msg, wParam, lParam);
     case WM_MOUSEACTIVATE:
+        return 0;
     case WM_SYSKEYUP:
     case WM_KEYUP:
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
-        return 0;
+        // Ticket 0000712: gameplay reads the keyboard from raw input
+        // (WM_INPUT, handled above), so these legacy key messages are not
+        // needed for game state. Previously we returned 0 without ever
+        // calling DefWindowProc, which suppressed the OS per-window
+        // keyboard-layout hotkeys (Alt+Shift / Ctrl+Shift): DefWindowProc is
+        // what detects that chord and posts WM_INPUTLANGCHANGEREQUEST.
+        // Forward them so layout switching works again. The Alt / F10 system
+        // menu this also enables is swallowed in the WM_SYSCOMMAND
+        // (SC_KEYMENU) case below so Alt cannot steal focus or freeze input.
+        return DefWindowProc(hWnd, msg, (WPARAM)wParam, (LPARAM)lParam);
+    case WM_INPUTLANGCHANGE:
+        // The active keyboard layout just changed (e.g. via Alt+Shift).
+        // Rebuild the legacy 1998 scancode->ASCII keymap so FEN / legacy
+        // text paths track the new layout instead of the one frozen at
+        // startup. load_keymap re-derives the layout from GetKeyboardLayout(0)
+        // and writes gnsi.Keyboard itself, so the argument is only a fallback
+        // default (the platform submodule cannot see the gnsi struct).
+        load_keymap(0);
+        return DefWindowProc(hWnd, msg, (WPARAM)wParam, (LPARAM)lParam);
     case WM_CHAR:
         return Pop3Input::ProcessEvent(hwnd, msg, wParam, lParam);;
     case WM_QUIT:
@@ -407,6 +433,14 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
 	if (wParam == SC_CLOSE)
 	{
 		_quitting = true;
+		return 0;
+	}
+	// Ticket 0000712: Alt / F10 / Alt+Space — now forwarded to DefWindowProc
+	// so the keyboard-layout hotkey fires — request the window system menu
+	// via SC_KEYMENU. Swallow it so Alt does not open a modal menu and freeze
+	// game input. (The command type is in the high bits; mask off the low 4.)
+	if ((wParam & 0xFFF0) == SC_KEYMENU)
+	{
 		return 0;
 	}
     default:;
