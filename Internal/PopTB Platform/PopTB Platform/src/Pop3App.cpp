@@ -288,7 +288,7 @@ static bool _inSizeMove = false;
 // game headers across the PopTB Platform submodule boundary. The signature
 // matches keys.h's `void load_keymap(SLONG kc)` — SLONG is `signed long`,
 // which is the same type (and mangling) as `long`.
-extern void load_keymap(long kc);
+extern void on_input_lang_change(void); // 712: game-side keymap reload (keeps prior map for unsupported layouts)
 
 Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg, Pop3WParam wParam, Pop3LParam lParam)
 {
@@ -323,7 +323,7 @@ Pop3Result POP3_CALLBACK Pop3App::MainWindowProc(Pop3WindowHandle hwnd, UINT msg
         // startup. load_keymap re-derives the layout from GetKeyboardLayout(0)
         // and writes gnsi.Keyboard itself, so the argument is only a fallback
         // default (the platform submodule cannot see the gnsi struct).
-        load_keymap(0);
+        on_input_lang_change();
         return DefWindowProc(hWnd, msg, (WPARAM)wParam, (LPARAM)lParam);
     case WM_CHAR:
         return Pop3Input::ProcessEvent(hwnd, msg, wParam, lParam);;
