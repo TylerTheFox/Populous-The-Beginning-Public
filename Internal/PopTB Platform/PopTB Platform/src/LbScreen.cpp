@@ -403,11 +403,11 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     // Adjust window style: borderless vs bordered-window vs exclusive
     if (borderless)
     {
-        // ddraw.ini fullscreen=true: borderless fullscreen - a desktop-size
-        // WS_POPUP window over a WINDOWED device (Pop3Screen::create takes
-        // the backbuffer size from this client rect). Never exclusive:
-        // desktop size is always presentable, so there is no display-mode
-        // enumeration failure path.
+        // ddraw.ini fullscreen=true + windowed=true: borderless fullscreen -
+        // a desktop-size WS_POPUP window over a WINDOWED device (Pop3Screen::
+        // create takes the backbuffer size from this client rect). Never
+        // exclusive: desktop size is always presentable, so there is no
+        // display-mode enumeration failure path.
         SetWindowLongA(_lbhWndMain, GWL_STYLE, WS_POPUP | WS_VISIBLE);
         SetWindowPos(_lbhWndMain, HWND_TOP, 0, 0,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
@@ -448,6 +448,23 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
 
     if (!Pop3Screen::isReady())
     {
+        if (!Pop3Screen::create(_lbhWndMain, nWidth, nHeight, windowed, borderless))
+        {
+            free(_lbFrontSurface.SurfaceArea.mpData);
+            free(_lbBackSurface.SurfaceArea.mpData);
+            _lbFrontSurface.SurfaceArea.mpData = NULL;
+            _lbBackSurface.SurfaceArea.mpData = NULL;
+            return LB_ERROR;
+        }
+    }
+    else if (!windowed)
+    {
+        // Exclusive-mode resolution change: destroy and recreate the D3D9
+        // device so it acquires the new display mode and backbuffer size.
+        // Windowed/borderless resolution changes are handled lazily on the
+        // next present() call via matchWindowSizeToBackbuffer (which detects
+        // the window client-rect change and Resets the windowed device).
+        Pop3Screen::destroy();
         if (!Pop3Screen::create(_lbhWndMain, nWidth, nHeight, windowed, borderless))
         {
             free(_lbFrontSurface.SurfaceArea.mpData);
