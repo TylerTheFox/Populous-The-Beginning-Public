@@ -10,6 +10,8 @@
 #include <windows.h>
 #include <d3dx9.h>
 #include <cstring>
+#include "../../../../Tracy.h"
+#include "../../../../TracyWin.h"
 
 #pragma comment(lib, "d3d9.lib")
 #pragma comment(lib, "d3dx9.lib")
@@ -460,6 +462,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
                          int width, int height,
                          const unsigned char* palette)
 {
+    ZoneScopedN("render.d3d9.present_frame");
     // --- frame-timing: present-to-present period (LOCAL-ONLY diag) ---
     const long long _pp_fpNow = _pp_qpc();
     const double _pp_framePeriodMs = _pp_prevPresent ? _pp_ms(_pp_prevPresent, _pp_fpNow) : 0.0;
@@ -518,54 +521,58 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     // GPU palette path: upload raw 8bpp indices + a 256-entry LUT and let a
     // pixel shader do the lookup, instead of converting every pixel on the
     // CPU. Falls back to the CPU convert if the shader/textures fail.
-    bool gpuOk = false;
-    if (s_gpuPalette)
     {
-        if (createPaletteShader() && ensurePaletteTexture() && createIndexTexture(width, height))
+        ZoneScopedN("render.d3d9.framebuffer_upload");
+        bool gpuOk = false;
+        if (s_gpuPalette)
         {
-            // Keep the SW-dim source (getFramebufferWidth/Height) current -
-            // the HW renderer scales its geometry by it. createFramebufferTexture
-            // (which normally sets these) is skipped on the GPU path.
-            s_framebufferWidth  = width;
-            s_framebufferHeight = height;
-            uploadIndices(pixels, pitch, width, height);
-            uploadPalette(palette, hwComposite);
-            gpuOk = true;
-        }
-        else
-        {
-            s_gpuPalette = false;   // stop retrying every frame
-            Pop3Debug::trace("[gpupal] GPU palette path unavailable; using CPU convert\n");
-        }
-    }
-    s_gpuActiveFrame = gpuOk;
-
-    if (!gpuOk)
-    {
-        if (!createFramebufferTexture(width, height))
-            return;
-        D3DLOCKED_RECT lr;
-        if (SUCCEEDED(s_pFramebufferTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
-        {
-            for (int y = 0; y < height; y++)
+            if (createPaletteShader() && ensurePaletteTexture() && createIndexTexture(width, height))
             {
-                const unsigned char* srcRow = pixels + y * pitch;
-                unsigned int* dstRow = reinterpret_cast<unsigned int*>(
-                    static_cast<unsigned char*>(lr.pBits) + y * lr.Pitch);
-
-                for (int x = 0; x < width; x++)
-                {
-                    const unsigned char idx = srcRow[x];
-                    const unsigned int alpha =
-                        (hwComposite && idx == kAlphaKeyIndex) ? 0x00u : 0xFFu;
-                    const unsigned char r = palette[idx * 4 + 0];
-                    const unsigned char g = palette[idx * 4 + 1];
-                    const unsigned char b = palette[idx * 4 + 2];
-                    dstRow[x] = (alpha << 24) | (r << 16) | (g << 8) | b;
-                }
+                // Keep the SW-dim source (getFramebufferWidth/Height) current -
+                // the HW renderer scales its geometry by it. createFramebufferTexture
+                // (which normally sets these) is skipped on the GPU path.
+                s_framebufferWidth  = width;
+                s_framebufferHeight = height;
+                uploadIndices(pixels, pitch, width, height);
+                uploadPalette(palette, hwComposite);
+                gpuOk = true;
             }
+            else
+            {
+                s_gpuPalette = false;   // stop retrying every frame
+                Pop3Debug::trace("[gpupal] GPU palette path unavailable; using CPU convert\n");
+            }
+        }
+        s_gpuActiveFrame = gpuOk;
 
-            s_pFramebufferTex->UnlockRect(0);
+        if (!gpuOk)
+        {
+            ZoneScopedN("render.d3d9.framebuffer_cpu_convert");
+            if (!createFramebufferTexture(width, height))
+                return;
+            D3DLOCKED_RECT lr;
+            if (SUCCEEDED(s_pFramebufferTex->LockRect(0, &lr, nullptr, D3DLOCK_DISCARD)))
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    const unsigned char* srcRow = pixels + y * pitch;
+                    unsigned int* dstRow = reinterpret_cast<unsigned int*>(
+                        static_cast<unsigned char*>(lr.pBits) + y * lr.Pitch);
+
+                    for (int x = 0; x < width; x++)
+                    {
+                        const unsigned char idx = srcRow[x];
+                        const unsigned int alpha =
+                            (hwComposite && idx == kAlphaKeyIndex) ? 0x00u : 0xFFu;
+                        const unsigned char r = palette[idx * 4 + 0];
+                        const unsigned char g = palette[idx * 4 + 1];
+                        const unsigned char b = palette[idx * 4 + 2];
+                        dstRow[x] = (alpha << 24) | (r << 16) | (g << 8) | b;
+                    }
+                }
+
+                s_pFramebufferTex->UnlockRect(0);
+            }
         }
     }
 
@@ -573,6 +580,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
 
     if (SUCCEEDED(s_pDevice->BeginScene()))
     {
+        ZoneScopedN("render.d3d9.scene");
         // Phase 8.5 #12c diag: bright-pink clear instead of black so we
         // can tell whether "black halos around sprites" are HW writing
         // black explicitly (halos stay black even with pink clear) vs
@@ -595,17 +603,17 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
             //   4. ImGui (sits on top of everything — fires from the
             //      game's draw_callback alongside the HW world pass).
             if (s_overlayCallback)
-                s_overlayCallback();
-            drawFramebufferQuad(/*alphaBlend=*/true);
+            { ZoneScopedN("render.d3d9.world_overlay"); s_overlayCallback(); }
+            { ZoneScopedN("render.d3d9.framebuffer_composite"); drawFramebufferQuad(/*alphaBlend=*/true); }
             if (s_hwUiOverlayCallback)
-                s_hwUiOverlayCallback();
+            { ZoneScopedN("render.d3d9.hw_ui_overlay"); s_hwUiOverlayCallback(); }
         }
         else
         {
             // Legacy order: SW framebuffer quad, then overlay (ImGui only).
-            drawFramebufferQuad(/*alphaBlend=*/false);
+            { ZoneScopedN("render.d3d9.framebuffer_composite"); drawFramebufferQuad(/*alphaBlend=*/false); }
             if (s_overlayCallback)
-                s_overlayCallback();
+            { ZoneScopedN("render.d3d9.overlay"); s_overlayCallback(); }
         }
 
         s_pDevice->EndScene();
@@ -624,8 +632,16 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
         _pp_lastCapTicks = _pp_qpc();
     }
 
-    s_pDevice->Present(nullptr, nullptr, nullptr, nullptr);
+    { ZoneScopedN("render.d3d9.present"); s_pDevice->Present(nullptr, nullptr, nullptr, nullptr); }
     const long long _pp_tPres1 = _pp_qpc();   // Present() returned
+
+    TracyPlot("d3d9.upload_ms", _pp_ms(_pp_tConv0, _pp_tConv1));
+    TracyPlot("d3d9.scene_ms", _pp_ms(_pp_tConv1, _pp_tDraw1));
+    TracyPlot("d3d9.present_ms", _pp_ms(_pp_tDraw1, _pp_tPres1));
+    TracyPlot("d3d9.frame_ms", _pp_framePeriodMs);
+    // The FrameMark belongs after Present so a driver/vsync stall remains part
+    // of the rendered frame rather than being attributed to the next one.
+    tracy_frame_end();
 
     // --- accumulate rolling 1s frame-timing (LOCAL-ONLY diagnostic) ---
     _pp_accConvert += _pp_ms(_pp_tConv0, _pp_tConv1);
