@@ -432,7 +432,10 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
 
         RECT rc = { 0, 0, (LONG)(nWidth * scale), (LONG)(nHeight * scale) };
         AdjustWindowRect(&rc, style, FALSE);
-        SetWindowPos(_lbhWndMain, HWND_TOP,
+        // HWND_NOTOPMOST, not HWND_TOP: the Alt+Enter borderless toggle
+        // sets WS_EX_TOPMOST, and HWND_TOP does not clear it - a reverted
+        // window stayed always-on-top (ticket 0002572).
+        SetWindowPos(_lbhWndMain, HWND_NOTOPMOST,
             (deskW - (rc.right - rc.left)) / 2,
             (deskH - (rc.bottom - rc.top)) / 2,
             rc.right - rc.left, rc.bottom - rc.top,
