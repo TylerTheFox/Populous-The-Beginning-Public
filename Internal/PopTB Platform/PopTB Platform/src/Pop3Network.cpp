@@ -739,8 +739,8 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
         }
     }
 
-    if (allow_joiners && /*(pn == DATA_NOT_SET || allowed_pn) &&*/
-        (buffer[0] == MAJOR_VERSION && buffer[1] == MINOR_VERSION && version.s == BUILD_NUMBER))
+    const bool version_ok = (buffer[0] == MAJOR_VERSION && buffer[1] == MINOR_VERSION && version.s == BUILD_NUMBER);
+    if (allow_joiners && /*(pn == DATA_NOT_SET || allowed_pn) &&*/ version_ok)
     {
         // Accept the version; if this lobby is password-protected, issue a
         // random per-join nonce the client must prove knowledge against in
@@ -778,8 +778,19 @@ void Pop3Network::check_join_request(const char * peer_address, UWORD peer_port,
         Pop3Debug::trace("NET_HOST_ACCEPT_JOIN%s", password_required() ? " (password challenge)" : "");
         Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_ACCEPT_JOIN, accept, accept_len);
     }
+    else if (version_ok && !m_host_init_complete.load())
+    {
+        // 0002583: same-build client whose join landed before the host opened
+        // the lobby (allow_joiners not yet set). NOT a version mismatch - send a
+        // transient deny the client silently retries instead of a hard fail.
+        Pop3Debug::trace("NET_HOST_DENY_JOIN (not ready - host init incomplete; client will retry)");
+        const char reason = POP3NETWORK_DENY_NOTREADY;
+        Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
+    }
     else
     {
+        // Genuine version mismatch, OR a same-build join to a deliberately
+        // closed lobby (game already started): definitive version deny.
         Pop3Debug::trace("NET_HOST_DENY_JOIN (version)");
         const char reason = POP3NETWORK_DENY_VERSION;
         Send(-1, peer_address, peer_port, Pop3NetworkTypes::HOST_DENY_JOIN, &reason, 1);
@@ -1310,6 +1321,15 @@ void Pop3Network::ParsePacket(char * buffer, DWORD buf_size, const char * peer_a
         if (am_host)
             break;
         const int raw = (buf_size >= 3) ? static_cast<unsigned char>(buffer[2]) : POP3NETWORK_DENY_VERSION;
+        // 0002583: transient 'host not lobby-ready yet' - our join arrived
+        // before the host opened the gates. Do NOT latch a deny reason or fail
+        // server_status; leave the join watchdog retrying (CONNECT_INTERVAL)
+        // until the host is ready (or the menu's 30s join timeout fires).
+        if (raw == POP3NETWORK_DENY_NOTREADY)
+        {
+            Pop3Debug::trace("NET_HOST_DENY_JOIN reason=not-ready (host init incomplete; retrying)");
+            break;
+        }
         // Unknown future reasons collapse to version (the generic "can't join
         // this host" bucket) rather than passing arbitrary bytes to the UI.
         const int reason = (raw == POP3NETWORK_DENY_PASSWORD || raw == POP3NETWORK_DENY_FULL
@@ -1912,8 +1932,12 @@ void Pop3Network::host_watchdog_func()
     *GamePtrs.PlayerNum = static_cast<SBYTE>(player_num);
     *GamePtrs.NetMyPlayerNumber = player_num;
 
-    // Let the flood gates open!
+    // Let the flood gates open! Set allow_joiners first, then latch
+    // init-complete: a reader still seeing allow_joiners==false is reading
+    // before this write and so also sees m_host_init_complete==false ->
+    // transient NOTREADY, never a spurious version deny at the boundary (0002583).
     allow_joiners = true;
+    m_host_init_complete.store(true);
 }
 
 void Pop3Network::join_watchdog_func()

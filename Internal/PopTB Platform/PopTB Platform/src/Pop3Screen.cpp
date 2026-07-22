@@ -262,6 +262,24 @@ bool Pop3Screen::createDevice()
         Pop3Debug::trace("Pop3Screen: vertex processing mode = %s",
             behaviour == D3DCREATE_HARDWARE_VERTEXPROCESSING ? "hardware" :
             behaviour == D3DCREATE_MIXED_VERTEXPROCESSING ? "mixed" : "software");
+
+        // 0002585: one-time device caps dump so a user log shows POW2 support,
+        // max texture size and adapter - needed to interpret HwTexture::create
+        // failures (e.g. NPOT rejects on a strict-POW2 device).
+        D3DCAPS9 devCaps;
+        if (SUCCEEDED(s_pDevice->GetDeviceCaps(&devCaps)))
+        {
+            D3DADAPTER_IDENTIFIER9 adapterId;
+            const char* adapter =
+                SUCCEEDED(s_pD3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapterId))
+                    ? adapterId.Description : "?";
+            Pop3Debug::trace(
+                "Pop3Screen: device caps - adapter='%s' maxTex=%lux%lu POW2=%d NONPOW2COND=%d",
+                adapter,
+                devCaps.MaxTextureWidth, devCaps.MaxTextureHeight,
+                (devCaps.TextureCaps & D3DPTEXTURECAPS_POW2) ? 1 : 0,
+                (devCaps.TextureCaps & D3DPTEXTURECAPS_NONPOW2CONDITIONAL) ? 1 : 0);
+        }
     }
 
     if (FAILED(hr))

@@ -40,6 +40,7 @@ typedef void (NET_CALLBACK *NetworkPingCallback)(WORD id, WORD seq, DWORD rondtr
 #define POP3NETWORK_DENY_PASSWORD           (1)
 #define POP3NETWORK_DENY_FULL               (2)   // lobby size cap reached (3c; spectators exempt)
 #define POP3NETWORK_DENY_NAME               (3)   // player name already in use by a different peer
+#define POP3NETWORK_DENY_NOTREADY           (4)   // 0002583: host up but lobby not ready yet (pre-init); client retries (transient)
 #define	POP3NETWORK_MAX_SESSION_NAME_LENGTH (64)
 #define	POP3NETWORK_MAX_PLAYER_NAME_LENGTH  (32)
 #define	NET_ALLPLAYERS						(0xffffffff)
@@ -418,6 +419,12 @@ protected:
     std::wstring                                    my_name;
     enum NetworkStatus                              network_status;
     bool                                            allow_joiners;
+    // 0002583: set true ONCE (never cleared) when the host watchdog opens the
+    // gates. Lets check_join_request tell the pre-init window (join arrived
+    // before the lobby was ready -> transient NOTREADY, client retries) from a
+    // deliberately closed lobby (game started -> allow_joiners cleared ->
+    // keep the definitive version deny).
+    std::atomic<bool>                               m_host_init_complete{ false };
     Poco::Condition                                 cv2;
     std::map<std::wstring, POP3NETWORK_PLAYERINFO>  players;
     mutable Poco::Mutex                             players_mu;
