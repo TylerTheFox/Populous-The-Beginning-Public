@@ -36,10 +36,10 @@ bool Pop3Input::init(const Pop3InputGameData & data)
 #else
     RAWINPUTDEVICE ri[2] = {};
 
-    // Mouse
+    // Mouse. dwFlags stays 0: legacy mouse messages must remain
+    // enabled so promoted touch/pen input keeps working.
     ri[0].usUsagePage = 0x01;
     ri[0].usUsage = 0x02;
-    ri[1].dwFlags = RIDEV_NOLEGACY;
 
     // Keyboard.
     ri[1].usUsagePage = 0x01;
@@ -385,9 +385,43 @@ Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam w
         case RIM_TYPEMOUSE:
             if (!_UseWindowsMessages)
             {
-                // Update Pointer Position (raw relative deltas accumulate here)
-                _mousePos.X += raw->data.mouse.lLastX;
-                _mousePos.Y += raw->data.mouse.lLastY;
+                if (raw->data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)
+                {
+                    // Touch/pen/RDP: lLastX/Y are ABSOLUTE, normalized 0..65535
+                    // over the primary screen (or the virtual desktop when
+                    // MOUSE_VIRTUAL_DESKTOP is set) - never add them as deltas.
+                    const bool virtualDesktop = (raw->data.mouse.usFlags & MOUSE_VIRTUAL_DESKTOP) != 0;
+                    const int screenLeft = virtualDesktop ? GetSystemMetrics(SM_XVIRTUALSCREEN) : 0;
+                    const int screenTop = virtualDesktop ? GetSystemMetrics(SM_YVIRTUALSCREEN) : 0;
+                    const int screenW = GetSystemMetrics(virtualDesktop ? SM_CXVIRTUALSCREEN : SM_CXSCREEN);
+                    const int screenH = GetSystemMetrics(virtualDesktop ? SM_CYVIRTUALSCREEN : SM_CYSCREEN);
+
+                    POINT pt;
+                    pt.x = screenLeft + (int)(((long long)raw->data.mouse.lLastX * screenW) / 65535);
+                    pt.y = screenTop + (int)(((long long)raw->data.mouse.lLastY * screenH) / 65535);
+                    ScreenToClient((HWND)hwnd, &pt);
+
+                    // Client -> framebuffer through the present rect, same
+                    // mapping as the WM_MOUSEMOVE path above.
+                    int prX, prY, prW, prH;
+                    Pop3Screen::getPresentRect(prX, prY, prW, prH);
+                    if (prW > 0 && prH > 0 && *_ptrs.ScreenW > 0 && *_ptrs.ScreenH > 0)
+                    {
+                        _mousePos.X = (int)(((long long)(pt.x - prX) * (long long)*_ptrs.ScreenW) / prW);
+                        _mousePos.Y = (int)(((long long)(pt.y - prY) * (long long)*_ptrs.ScreenH) / prH);
+                    }
+                    else
+                    {
+                        _mousePos.X = pt.x;
+                        _mousePos.Y = pt.y;
+                    }
+                }
+                else
+                {
+                    // Update Pointer Position (raw relative deltas accumulate here)
+                    _mousePos.X += raw->data.mouse.lLastX;
+                    _mousePos.Y += raw->data.mouse.lLastY;
+                }
 
                 // Clamp to the LAST valid pixel (ScreenW-1/ScreenH-1):
                 // clamping to ScreenW/ScreenH parks the cursor one pixel

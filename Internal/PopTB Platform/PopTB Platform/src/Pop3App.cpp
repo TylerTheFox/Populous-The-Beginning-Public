@@ -176,6 +176,10 @@ SDL_Window* Pop3App::getWindow()
 }
 #endif
 
+#if defined(_WIN32) && !POP3_BUILD_USE_SDL2
+static void reassertCursorClip(); // defined next to the clip helpers below
+#endif
+
 void Pop3App::ProcessWindowsMessages()
 {
 #if POP3_BUILD_USE_SDL2
@@ -226,6 +230,10 @@ void Pop3App::ProcessWindowsMessages()
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 	}
+	// Windows silently drops cursor clips on system gestures (touch keyboard,
+	// shell overlays) with no message to hook - re-assert once per pump.
+	// ClipCursor on an unchanged rect is cheap and idempotent (0002600).
+	reassertCursorClip();
 #endif
 }
 
@@ -282,6 +290,15 @@ static void releaseCursorClip()
 // we must NOT re-clip the cursor — doing so fights the window drag and
 // makes the window jump or stick.
 static bool _inSizeMove = false;
+
+// Called once per message pump: re-arm the clip if the OS dropped it. Must
+// mirror the wndproc call-site conditions (active, not in a size-move drag)
+// and must never fire after WM_CLOSE released the clip for shutdown.
+static void reassertCursorClip()
+{
+    if (Pop3App::isActive() && !_inSizeMove && !Pop3App::isQuitting())
+        clipCursorToClientRect((HWND)Pop3App::getHwnd());
+}
 
 // Ticket 0000712: the game layer is linked into this same executable, so
 // forward-declare rather than pull game headers across the PopTB Platform
