@@ -41,7 +41,7 @@ bool                Pop3Screen::s_ready               = false;
 bool                Pop3Screen::s_hwComposite         = false;
 bool                Pop3Screen::s_debugBackbufferPink = false;
 
-bool                Pop3Screen::s_vsync               = true;   // default: vsync on (unchanged)
+bool                Pop3Screen::s_vsync               = true;   // default: vsync on
 int                 Pop3Screen::s_maxFps              = 0;
 bool                Pop3Screen::s_maintas             = false;  // ddraw.ini maintas (letterbox)
 IDirect3DTexture9*      Pop3Screen::s_pIndexTex       = nullptr;
@@ -137,16 +137,13 @@ void Pop3Screen::applyPresentMode(bool vsync, int maxFps)
     HRESULT hr = s_pDevice->Reset(&pp);
     if (FAILED(hr))
     {
-        // A LOST device (alt-tab away from exclusive between the checkbox
-        // click and this loop-top apply) fails Reset with DEVICELOST - do
-        // NOT rebuild on it (an unfocused exclusive CreateDevice fails too).
-        // The new interval is already latched in s_vsync; handleDeviceLost's
-        // next successful Reset builds its pp from s_vsync and picks it up.
+        // LOST device: do NOT rebuild (an unfocused exclusive CreateDevice
+        // fails too). s_vsync is already latched; handleDeviceLost's next
+        // successful Reset picks it up.
         if (s_pDevice->TestCooperativeLevel() != D3D_OK)
         {
-            // Mirror matchWindowSizeToBackbuffer's failure path: leave state
-            // as-is (no init callback); handleDeviceLost recovers next frame
-            // and fires the init callback after its successful Reset.
+            // Leave state as-is (no init callback); handleDeviceLost
+            // recovers next frame and fires the init callback then.
             return;
         }
         // Genuine parameter rejection on a healthy device: full rebuild,
@@ -299,7 +296,7 @@ bool Pop3Screen::createDevice()
     pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     pp.BackBufferWidth = s_backbufferWidth;
     pp.BackBufferHeight = s_backbufferHeight;
-    pp.BackBufferCount = 2; // P4-07: one queued frame so Present() does not stall the
+    pp.BackBufferCount = 2; // one queued frame so Present() does not stall the
                             // CPU-bound frame loop; worst case +<=1 vblank latency, only when the queue is full
     pp.hDeviceWindow = (HWND)s_hWnd;
     pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -311,15 +308,11 @@ bool Pop3Screen::createDevice()
         pp.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
     }
 
-    // P4-08: hardware vertex processing when the driver can do it - under
-    // SWVP every draw pays runtime-side CPU vertex work and the HwGpuLand
-    // vs_2_0 shader executes on the CPU, negating its offload design. Main
-    // geometry is XYZRHW (bypasses vertex processing) and nothing uses
-    // ProcessVertices/D3DUSAGE_SOFTWAREPROCESSING, so HWVP is safe. NEVER
-    // add D3DCREATE_MULTITHREADED (hard project invariant) and never
-    // PUREDEVICE (imgui backend calls GetTransform). On failure fall back
-    // MIXED then SOFTWARE, rebuilding pp each retry (CreateDevice may
-    // scribble on it).
+    // Prefer hardware vertex processing: under SWVP the HwGpuLand vs_2_0
+    // shader runs on the CPU. NEVER add D3DCREATE_MULTITHREADED (hard
+    // project invariant) and never PUREDEVICE (imgui calls GetTransform).
+    // On failure fall back MIXED then SOFTWARE, rebuilding pp each retry
+    // (CreateDevice may scribble on it).
     const D3DPRESENT_PARAMETERS pp_pristine = pp;
     DWORD behaviour = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
     {
@@ -382,13 +375,10 @@ bool Pop3Screen::createDevice()
 
     if (FAILED(hr))
     {
-        // NOT fatal here: runtime display-mode transitions (Display settings
-        // window -> exclusive fullscreen) reach this on an enumerable-but-
-        // uncreatable exclusive device (RDP, another exclusive app, hybrid-GPU
-        // quirks). Return false so LbScreen_SetMode reports LB_ERROR and the
-        // caller can fall back (host_apply_display_mode re-applies borderless).
-        // The STARTUP path still hard-fails: setup_host turns the LB_ERROR
-        // into NoReport_FatalError("Failed to create Window!").
+        // NOT fatal here: exclusive devices can be enumerable but uncreatable
+        // (RDP, another exclusive app, hybrid GPUs). Return false so
+        // LbScreen_SetMode reports LB_ERROR and the caller falls back; the
+        // startup path still hard-fails in setup_host.
         Pop3Debug::trace("Pop3Screen: Failed to create D3D9 device (hr=0x%08X)", hr);
         return false;
     }
@@ -423,14 +413,12 @@ bool Pop3Screen::createFramebufferTexture(int width, int height)
         s_pFramebufferTex = nullptr;
     }
 
-    // A8R8G8B8 so the alpha channel survives — the Phase 7 composite keys
-    // on palette-index-255 → alpha=0 to punch the SW quad through to HW
-    // geometry in the world area. X8R8G8B8 would throw away the alpha
-    // bits we wrote into the texture, leaving a fully-opaque quad that
-    // hides HW behind it.
-    // 4K audit F1: refuse (loudly) framebuffer textures beyond the
-    // device's texture caps - some drivers cap at 4096/8192 and a silent
-    // CreateTexture failure previously produced a black screen with no log.
+    // Must be A8R8G8B8: the HW composite keys the transparent palette index
+    // to alpha=0 to punch the SW quad through to HW geometry; X8R8G8B8
+    // would drop those alpha bits and hide HW behind an opaque quad.
+    // Refuse (loudly) framebuffer textures beyond the device's texture
+    // caps - some drivers cap at 4096/8192 and a silent CreateTexture
+    // failure produces a black screen with no log.
     {
         D3DCAPS9 caps;
         if (SUCCEEDED(s_pDevice->GetDeviceCaps(&caps)) &&
@@ -459,14 +447,11 @@ bool Pop3Screen::createFramebufferTexture(int width, int height)
 }
 
 // ---------------------------------------------------------------
-//  GPU palette-lookup path (offloads the per-frame CPU convert)
-//
-//  Instead of converting the whole 8bpp framebuffer to 32bpp on the CPU
-//  every frame, upload the raw indices to an L8 texture and let a ps_2_0
-//  shader do the palette lookup on the GPU. The 256-entry palette lives
-//  in a 256x1 LUT (rebuilt each frame - it cycles for water); the
-//  index-0 -> alpha-0 composite key is baked into the LUT alpha. Falls
-//  back to the CPU convert if any resource cannot be created.
+//  GPU palette-lookup path (offloads the per-frame CPU convert):
+//  raw 8bpp indices in an L8 texture + a 256x1 LUT (rebuilt each frame -
+//  it cycles for water), ps_2_0 shader does the lookup. The index-0 ->
+//  alpha-0 composite key is baked into the LUT alpha. Falls back to the
+//  CPU convert if any resource cannot be created.
 // ---------------------------------------------------------------
 bool Pop3Screen::createPaletteShader()
 {
@@ -514,7 +499,7 @@ bool Pop3Screen::createIndexTexture(int width, int height)
         s_pIndexTex->Release();
         s_pIndexTex = nullptr;
     }
-    // 4K audit F1: caps guard + loud failure (see createFramebufferTexture)
+    // Caps guard + loud failure (see createFramebufferTexture)
     {
         D3DCAPS9 caps;
         if (SUCCEEDED(s_pDevice->GetDeviceCaps(&caps)) &&
@@ -598,42 +583,25 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     if (handleDeviceLost())
         return; // Skip this frame, device was just reset
 
-    // If the window has been resized since device creation, the D3D9
-    // backbuffer stays at its original size and Present() scales it to
-    // the new client rect via the driver — that bilinear stretch on top
-    // of our already-point-upscaled quad causes visible shimmer around
-    // fine UI edges (sidebar separators, icon borders). Keep the
-    // backbuffer in sync with the window client rect so Present is 1:1.
+    // Keep the backbuffer in sync with the window client rect so Present
+    // is 1:1 - the driver's bilinear stretch on a stale-size backbuffer
+    // shimmers around fine UI edges.
     if (matchWindowSizeToBackbuffer())
         return; // Skip this frame, device was just reset
 
     // The framebuffer/index texture is created lazily below, per render path.
 
-    // Phase 7 option A: when HW rendering is active, we flip the frame
-    // composite order so HW world geometry (terrain/sprites/etc.) draws
-    // FIRST onto a clean backbuffer, then the SW back surface layers on
-    // top as an alpha-keyed quad (palette index 255 = fully transparent,
-    // everything else opaque). That way UI drawn into the SW back
-    // surface (panels, minimap, text, ghost-blended sprites that bail
-    // back to SW) appears on top of the HW world exactly where the SW
-    // pipeline wrote pixels, and HW terrain shows through everywhere
-    // else. Without the reorder (pre-Phase-7), HW geometry drew on top
-    // of the SW composite, so anything rendered into SW in the world
-    // area got overdrawn by HW terrain and was invisible.
-    //
-    // Key palette index 255 is chosen because the SW pipeline clears the
-    // back surface to it after each LbScreen_Swap when HW is active
-    // (see LbScreen.cpp). It's an uncommon UI colour so we don't false-
-    // positive on legit UI pixels; if the rest of the SW pipeline ends
-    // up legitimately emitting 255 somewhere that looks transparent, we
-    // pick a different sentinel.
+    // HW composite: HW world geometry draws FIRST onto a clean backbuffer,
+    // then the SW back surface layers on top as an alpha-keyed quad so SW
+    // UI (panels, minimap, text) covers the HW world only where SW wrote
+    // pixels. The SW pipeline clears the back surface to the key index
+    // after each LbScreen_Swap when HW is active (see LbScreen.cpp).
     const bool hwComposite = s_hwComposite;
-    // Palette index 0 as the transparent key. Rationale: RLE-encoded
-    // sprites (which is how nearly every UI element draws) use byte 0 as
-    // "end of row" in the decoder, so decoded sprite pixels never write
-    // index 0 to the back surface. The earlier choice of 255 false-
-    // positived the shaman portrait in the sidebar because 255 is the
-    // cycled-highlight palette slot (see cycle_clr_255 in Palettes.cpp).
+    // Transparent key must stay index 0: RLE sprite decoding (nearly every
+    // UI element) uses byte 0 as "end of row", so decoded sprite pixels
+    // never write index 0. Index 255 is unusable - it is the cycled-
+    // highlight slot (cycle_clr_255 in Palettes.cpp) and false-positives
+    // the sidebar shaman portrait.
     const unsigned int kAlphaKeyIndex = 0;
 
     // Upload 8bpp indexed pixels → 32bpp ARGB texture. In HW-composite
@@ -704,11 +672,9 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
     if (SUCCEEDED(s_pDevice->BeginScene()))
     {
         ZoneScopedN("render.d3d9.scene");
-        // Phase 8.5 #12c diag: bright-pink clear instead of black so we
-        // can tell whether "black halos around sprites" are HW writing
-        // black explicitly (halos stay black even with pink clear) vs
-        // alpha-test discarding pixels and revealing the cleared bg
-        // (halos become pink).
+        // Diagnostic: bright-pink clear distinguishes HW writing black
+        // explicitly (halos stay black) from alpha-test discard revealing
+        // the cleared background (halos turn pink).
         const D3DCOLOR clearColour = s_debugBackbufferPink
                                      ? 0xFFFF00FFu  // bright magenta
                                      : 0xFF000000u; // black
@@ -716,7 +682,7 @@ void Pop3Screen::present(const unsigned char* pixels, int pitch,
 
         if (hwComposite)
         {
-            // Phase 11 composite order:
+            // Composite order:
             //   1. HW world geometry into the clean backbuffer (scissored
             //      to the world rect by HwRender::drawOverlay).
             //   2. SW back surface as an alpha-keyed overlay quad (panels
@@ -872,9 +838,9 @@ void Pop3Screen::drawFramebufferQuad(bool alphaBlend)
     s_pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
     s_pDevice->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
 
-    // Alpha blending for the Phase 7 composite — SW framebuffer overlaid
-    // on HW world geometry with palette-index-255 → alpha=0 pixels
-    // showing HW through. For SW-only mode we disable it (opaque quad).
+    // Alpha blending for the HW composite - SW framebuffer overlaid on HW
+    // world geometry, key-index pixels (alpha=0) showing HW through. For
+    // SW-only mode we disable it (opaque quad).
     if (alphaBlend)
     {
         s_pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
@@ -945,17 +911,12 @@ void Pop3Screen::toggleFullscreen()
     if (!s_pDevice || !s_pD3D)
         return;
 
-    // "Fullscreen" here is BORDERLESS: a desktop-size WS_POPUP window over
-    // a WINDOWED device. Both states are Windowed=TRUE devices that differ
-    // only in window style and backbuffer size, so we change the window and
-    // then RESET the existing device to the new size - the same proven path
-    // as matchWindowSizeToBackbuffer. A Reset PRESERVES MANAGED textures and
-    // compiled shaders; a full releaseDevice()+createDevice() would destroy
-    // them, which both crashed on the stale kept-pointers (onDeviceLost keeps
-    // MANAGED/shaders across a Reset) AND left the land atlas / tex cache
-    // empty because they had to repopulate from scratch. Never request an
-    // exclusive device here - the client-size backbuffer is generally not an
-    // enumerable display mode and the exclusive path is a hard exit.
+    // "Fullscreen" here is BORDERLESS: a desktop-size WS_POPUP window over a
+    // WINDOWED device. Must RESET the existing device, not rebuild it - a
+    // Reset preserves MANAGED textures/shaders that onDeviceLost keeps as
+    // stale pointers across it. Never request an exclusive device here: the
+    // client-size backbuffer is rarely an enumerable mode and that path is a
+    // hard exit.
     s_fullscreen = !s_fullscreen;
     s_windowed = true;
 
@@ -1047,12 +1008,9 @@ void Pop3Screen::toggleFullscreen()
     HRESULT hr = s_pDevice->Reset(&pp);
     if (FAILED(hr))
     {
-        // Reset rejected the new mode (rare - e.g. a driver that dislikes the
-        // desktop-size windowed backbuffer). Fall back to a full device
-        // rebuild so we stay alive: the DESTROY callback releases EVERY
-        // device-owned resource (MANAGED textures + shaders too) so nothing
-        // dangles, then createDevice() makes a fresh device. Land caches
-        // repopulate lazily on the next frames.
+        // Reset rejected the new mode: full rebuild. The DESTROY callback
+        // must release EVERY device-owned resource (MANAGED + shaders too)
+        // so nothing dangles; caches repopulate lazily.
         if (s_deviceDestroyCallback)
             s_deviceDestroyCallback();
         else if (s_deviceDeinitCallback)
@@ -1152,12 +1110,9 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
         s_pFramebufferTex->Release();
         s_pFramebufferTex = nullptr;
     }
-    // s_pIndexTex release and the dim-reset must NOT be nested under
-    // s_pFramebufferTex: in the default GPU-palette config present() takes the
-    // index-texture branch and never creates s_pFramebufferTex, so the live
-    // DEFAULT-pool s_pIndexTex would otherwise survive into Reset() and make it
-    // fail with D3DERR_INVALIDCALL (silent driver-stretch fallback). Match the
-    // toggleFullscreen / handleDeviceLost paths, which release it unconditionally.
+    // Release s_pIndexTex UNCONDITIONALLY (not nested under s_pFramebufferTex):
+    // on the GPU-palette path s_pFramebufferTex is never created, and a live
+    // DEFAULT-pool index texture makes Reset() fail with D3DERR_INVALIDCALL.
     if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
     // Force a re-create at the next present() so dims are re-taken.
     s_framebufferWidth = 0;
@@ -1170,7 +1125,7 @@ bool Pop3Screen::matchWindowSizeToBackbuffer()
     pp.BackBufferFormat = D3DFMT_X8R8G8B8;
     pp.BackBufferWidth = newW;
     pp.BackBufferHeight = newH;
-    pp.BackBufferCount = 2; // P4-07: one queued frame so Present() does not stall the
+    pp.BackBufferCount = 2; // one queued frame so Present() does not stall the
                             // CPU-bound frame loop; worst case +<=1 vblank latency, only when the queue is full
     pp.hDeviceWindow = (HWND)s_hWnd;
     pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -1225,7 +1180,7 @@ bool Pop3Screen::handleDeviceLost()
         pp.BackBufferFormat = D3DFMT_X8R8G8B8;
         pp.BackBufferWidth = s_backbufferWidth;
         pp.BackBufferHeight = s_backbufferHeight;
-        pp.BackBufferCount = 2; // P4-07: one queued frame so Present() does not stall the
+        pp.BackBufferCount = 2; // one queued frame so Present() does not stall the
                             // CPU-bound frame loop; worst case +<=1 vblank latency, only when the queue is full
         pp.hDeviceWindow = (HWND)s_hWnd;
         pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;

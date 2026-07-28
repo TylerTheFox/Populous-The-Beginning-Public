@@ -149,14 +149,10 @@ static int CreateScreenModeList()
         {
             insert_mode(dm.dmPelsWidth, dm.dmPelsHeight, dm.dmBitsPerPel);
 
-            // Modern Windows (10/11) does not enumerate 8bpp display modes
-            // through EnumDisplaySettings — the driver stack only exposes
-            // 32bpp (and sometimes 16bpp). The game's internal rasterizer
-            // is 8bpp regardless; Pop3Screen handles the palette->texture
-            // upload at present time. Mirror every reported resolution as
-            // a synthetic 8bpp entry so enum_screen_modes (Utils.cpp) can
-            // still find the 640x480/800x600 it needs without requiring
-            // actual 8bpp support from the display driver.
+            // Modern Windows never enumerates 8bpp modes, but the game's
+            // rasterizer is 8bpp (Pop3Screen converts at present time).
+            // Mirror every resolution as a synthetic 8bpp entry so
+            // enum_screen_modes still finds 640x480/800x600.
             if (dm.dmBitsPerPel != 8)
                 insert_mode(dm.dmPelsWidth, dm.dmPelsHeight, 8);
         }
@@ -398,26 +394,20 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     _InitialiseSurface(&_lbFrontSurface, nWidth, nHeight, nDepth, flags);
     _InitialiseSurface(&_lbBackSurface, nWidth, nHeight, nDepth, flags);
 
-    // Leaving exclusive at runtime (Display settings window): destroy the
-    // exclusive device BEFORE the window styling below - destroying it
-    // restores the desktop display mode, so the GetSystemMetrics calls in
-    // the borderless/windowed branches size against the real desktop rather
-    // than the still-active exclusive game resolution (which made a restored
-    // window integer-scale against a 640x480 "desktop"). The create path
-    // further down sees !isReady and builds the windowed device fresh.
+    // Leaving exclusive at runtime: destroy the exclusive device BEFORE the
+    // window styling below, so it restores the desktop mode and the
+    // GetSystemMetrics calls size against the real desktop (not the still-
+    // active exclusive game resolution). The create path below rebuilds.
     if (Pop3Screen::isReady() && windowed && !Pop3Screen::isWindowed())
         Pop3Screen::destroy();
 
-    // Create D3D9 device via Pop3Screen. `windowed` / `borderless` were
-    // resolved from the flags above (near the availability gate).
     // Adjust window style: borderless vs bordered-window vs exclusive
     if (borderless)
     {
-        // ddraw.ini fullscreen=true + windowed=true: borderless fullscreen -
-        // a desktop-size WS_POPUP window over a WINDOWED device (Pop3Screen::
-        // create takes the backbuffer size from this client rect). Never
-        // exclusive: desktop size is always presentable, so there is no
-        // display-mode enumeration failure path.
+        // Borderless fullscreen: a desktop-size WS_POPUP window over a
+        // WINDOWED device (Pop3Screen::create takes the backbuffer size from
+        // this client rect). Never exclusive - desktop size is always
+        // presentable, so no display-mode enumeration failure path.
         SetWindowLongA(_lbhWndMain, GWL_STYLE, WS_POPUP | WS_VISIBLE);
         SetWindowPos(_lbhWndMain, HWND_TOP, 0, 0,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
@@ -472,14 +462,10 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     }
     else if (!windowed || !Pop3Screen::isWindowed())
     {
-        // Exclusive-mode resolution change - or a runtime transition where
-        // the device's windowed-ness itself flips (windowed/borderless ->
-        // exclusive, or exclusive -> windowed/borderless from the Display
-        // settings window): destroy and recreate the D3D9 device so it
-        // acquires (or releases) the display mode and backbuffer size.
-        // Same-windowed-ness resolution changes are handled lazily on the
-        // next present() call via matchWindowSizeToBackbuffer (which detects
-        // the window client-rect change and Resets the windowed device).
+        // Exclusive resolution change, or the device's windowed-ness itself
+        // flips: destroy and recreate the device. Same-windowed-ness
+        // resolution changes are handled lazily on the next present() via
+        // matchWindowSizeToBackbuffer.
         Pop3Screen::destroy();
         if (!Pop3Screen::create(_lbhWndMain, nWidth, nHeight, windowed, borderless))
         {
@@ -506,24 +492,11 @@ TbError LbScreen_Swap(ULONG flags)
     if (!_lbBackSurface.SurfaceArea.mpData || !_lbFrontSurface.SurfaceArea.mpData)
         return LB_ERROR;
 
-    // Phase 7 composite mode: clear the back surface to the alpha-key
-    // palette index so the next frame starts fully transparent. SW draws
-    // (UI panels, minimap, text, ghost-blended sprites that bail back to
-    // SW) then overwrite the 255 with opaque colours; Pop3Screen's
-    // quad-composite keys on index 255 to show HW geometry through the
-    // untouched world area. Without this, stale terrain from previous
-    // SW-only frames would linger and block HW.
-    //
-    // Clear happens BEFORE the back->front blit so this swap still
-    // presents whatever the game just drew; next frame starts clean.
-
     _LbGCBS.EventNotification(LBCB_SCREEN_BEGIN_SWAP, NULL);
 
-    // P4-04: present the BACK surface directly - present() consumes the
-    // pixels synchronously (uploadIndices memcpy / inline LockRect convert)
-    // and retains no pointer, and the front surface has no other pixel
-    // consumer; the full-framebuffer back->front memcpy that used to sit
-    // here was a dead copy (~0.7% CPU). The front surface remains only as
+    // Present the BACK surface directly - present() consumes the pixels
+    // synchronously and retains no pointer, so a back->front memcpy here
+    // would be a dead copy (~0.7% CPU). The front surface remains only as
     // LbScreen_PartSwap's letterbox compose target (512x384 path).
     Pop3Screen::present(
         _lbBackSurface.SurfaceArea.mpData,
@@ -532,9 +505,10 @@ TbError LbScreen_Swap(ULONG flags)
         _lbBackSurface.SurfaceArea.mSize.Height,
         (const unsigned char*)&_lbGlobalPalette.Entry[0]);
 
-    // Phase 7 composite: prep the back surface for the next frame by
-    // clearing it to the alpha-key palette index (255). See the comment
-    // at the top of this function for rationale.
+    // HW composite: clear the back surface to the alpha-key palette index
+    // AFTER presenting, so next frame starts fully transparent and HW
+    // geometry shows through everywhere SW does not draw. Skipping this
+    // leaves stale SW terrain blocking the HW world.
     if (Pop3Screen::hwCompositeActive())
     {
         // Palette index 0 = alpha key (see Pop3Screen::present comment).

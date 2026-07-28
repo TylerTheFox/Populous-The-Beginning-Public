@@ -324,13 +324,11 @@ Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam w
     case WM_MOUSEMOVE:
         if (_UseWindowsMessages)
         {
-            // Update Pointer Position. WM_MOUSEMOVE delivers window CLIENT
-            // pixels, but the game cursor lives in FRAMEBUFFER (game logical
-            // resolution) space - map through the present rect so a scaled
-            // window and/or the maintas letterbox (Pop3Screen::getPresentRect)
-            // keep the cursor aligned with what is under it. Historically this
-            // path used the raw client pixels, which was only correct at 1:1
-            // window scale (Legacy Mouse Mode on a resized window drifted).
+            // WM_MOUSEMOVE delivers window CLIENT pixels; the game cursor
+            // lives in FRAMEBUFFER (game logical resolution) space. Map
+            // through Pop3Screen::getPresentRect so a scaled window and the
+            // maintas letterbox keep the cursor aligned - raw client pixels
+            // are only correct at 1:1 window scale.
             {
                 int clientX = GET_X_LPARAM(lParam);
                 int clientY = GET_Y_LPARAM(lParam);
@@ -391,11 +389,10 @@ Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam w
                 _mousePos.X += raw->data.mouse.lLastX;
                 _mousePos.Y += raw->data.mouse.lLastY;
 
-                // Check mouse coords. Clamp to the LAST valid pixel (ScreenW-1 /
-                // ScreenH-1); clamping to ScreenW/ScreenH parks the cursor one
-                // pixel off-screen on the edge-scroll threshold, and since raw
-                // deltas keep arriving while the OS pointer is clipped, the map
-                // edge-scrolls forever -> "mouse sticks at edge and keeps moving".
+                // Clamp to the LAST valid pixel (ScreenW-1/ScreenH-1):
+                // clamping to ScreenW/ScreenH parks the cursor one pixel
+                // off-screen on the edge-scroll threshold, so the map
+                // edge-scrolls forever ("mouse sticks at edge").
                 if (_mousePos.X < 0)
                     _mousePos.X = 0;
                 else if (_mousePos.X > *_ptrs.ScreenW - 1)
