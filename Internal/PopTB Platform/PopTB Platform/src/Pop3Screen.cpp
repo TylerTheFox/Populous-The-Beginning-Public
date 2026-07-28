@@ -43,6 +43,7 @@ bool                Pop3Screen::s_debugBackbufferPink = false;
 
 bool                Pop3Screen::s_vsync               = true;   // default: vsync on (unchanged)
 int                 Pop3Screen::s_maxFps              = 0;
+bool                Pop3Screen::s_maintas             = false;  // ddraw.ini maintas (letterbox)
 IDirect3DTexture9*      Pop3Screen::s_pIndexTex       = nullptr;
 IDirect3DTexture9*      Pop3Screen::s_pPaletteTex     = nullptr;
 IDirect3DPixelShader9*  Pop3Screen::s_pPalettePS      = nullptr;
@@ -91,6 +92,103 @@ void Pop3Screen::setPresentMode(bool vsync, int maxFps)
 {
     s_vsync  = vsync;
     s_maxFps = (maxFps > 0) ? maxFps : 0;
+}
+
+void Pop3Screen::applyPresentMode(bool vsync, int maxFps)
+{
+    const bool intervalChanged = (vsync != s_vsync);
+    setPresentMode(vsync, maxFps);
+
+    // The CPU cap is read live each present; only the D3D presentation
+    // interval is baked into the device and needs a Reset.
+    if (!intervalChanged || !isReady())
+        return;
+
+    // Reset-grade teardown, mirroring matchWindowSizeToBackbuffer: release
+    // DEFAULT-pool resources, Reset to the SAME dims with the new interval.
+    if (s_deviceDeinitCallback)
+        s_deviceDeinitCallback();
+
+    if (s_pFramebufferTex)
+    {
+        s_pFramebufferTex->Release();
+        s_pFramebufferTex = nullptr;
+    }
+    if (s_pIndexTex) { s_pIndexTex->Release(); s_pIndexTex = nullptr; s_indexTexW = s_indexTexH = 0; }
+    // Force a re-create at the next present() so dims are re-taken.
+    s_framebufferWidth = 0;
+    s_framebufferHeight = 0;
+
+    D3DPRESENT_PARAMETERS pp;
+    ZeroMemory(&pp, sizeof(pp));
+    pp.Windowed = s_windowed ? TRUE : FALSE;
+    pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    pp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    pp.BackBufferWidth = s_backbufferWidth;
+    pp.BackBufferHeight = s_backbufferHeight;
+    pp.BackBufferCount = 2;
+    pp.hDeviceWindow = (HWND)s_hWnd;
+    pp.PresentationInterval = s_vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+    pp.EnableAutoDepthStencil = TRUE;
+    pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    if (!s_windowed)
+        pp.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
+
+    HRESULT hr = s_pDevice->Reset(&pp);
+    if (FAILED(hr))
+    {
+        // A LOST device (alt-tab away from exclusive between the checkbox
+        // click and this loop-top apply) fails Reset with DEVICELOST - do
+        // NOT rebuild on it (an unfocused exclusive CreateDevice fails too).
+        // The new interval is already latched in s_vsync; handleDeviceLost's
+        // next successful Reset builds its pp from s_vsync and picks it up.
+        if (s_pDevice->TestCooperativeLevel() != D3D_OK)
+        {
+            // Mirror matchWindowSizeToBackbuffer's failure path: leave state
+            // as-is (no init callback); handleDeviceLost recovers next frame
+            // and fires the init callback after its successful Reset.
+            return;
+        }
+        // Genuine parameter rejection on a healthy device: full rebuild,
+        // same fallback as toggleFullscreen.
+        if (s_deviceDestroyCallback)
+            s_deviceDestroyCallback();
+        else if (s_deviceDeinitCallback)
+            s_deviceDeinitCallback();
+        releaseDevice();
+        createDevice();
+    }
+
+    if (s_deviceInitCallback)
+        s_deviceInitCallback();
+}
+
+void Pop3Screen::setMaintainAspect(bool on) { s_maintas = on; }
+bool Pop3Screen::maintainAspect()           { return s_maintas; }
+
+void Pop3Screen::getPresentRect(int& x, int& y, int& w, int& h)
+{
+    x = 0;
+    y = 0;
+    w = s_backbufferWidth;
+    h = s_backbufferHeight;
+
+    if (!s_maintas || s_framebufferWidth <= 0 || s_framebufferHeight <= 0 ||
+        s_backbufferWidth <= 0 || s_backbufferHeight <= 0)
+        return;
+
+    // Aspect-fit: scale the framebuffer uniformly to the largest size that
+    // fits the backbuffer, centered. Bars are the regular black Clear.
+    const float scaleX = (float)s_backbufferWidth  / (float)s_framebufferWidth;
+    const float scaleY = (float)s_backbufferHeight / (float)s_framebufferHeight;
+    const float scale  = (scaleX < scaleY) ? scaleX : scaleY;
+
+    const int destW = (int)((float)s_framebufferWidth  * scale + 0.5f);
+    const int destH = (int)((float)s_framebufferHeight * scale + 0.5f);
+    x = (s_backbufferWidth  - destW) / 2;
+    y = (s_backbufferHeight - destH) / 2;
+    w = destW;
+    h = destH;
 }
 
 void Pop3Screen::getFrameTimingMs(double& convertUpload, double& hwDraw,
@@ -284,7 +382,14 @@ bool Pop3Screen::createDevice()
 
     if (FAILED(hr))
     {
-        Pop3Debug::fatalError_NoReport("Pop3Screen: Failed to create D3D9 device (hr=0x%08X)", hr);
+        // NOT fatal here: runtime display-mode transitions (Display settings
+        // window -> exclusive fullscreen) reach this on an enumerable-but-
+        // uncreatable exclusive device (RDP, another exclusive app, hybrid-GPU
+        // quirks). Return false so LbScreen_SetMode reports LB_ERROR and the
+        // caller can fall back (host_apply_display_mode re-applies borderless).
+        // The STARTUP path still hard-fails: setup_host turns the LB_ERROR
+        // into NoReport_FatalError("Failed to create Window!").
+        Pop3Debug::trace("Pop3Screen: Failed to create D3D9 device (hr=0x%08X)", hr);
         return false;
     }
 
@@ -690,16 +795,23 @@ void Pop3Screen::drawFramebufferQuad(bool alphaBlend)
     if (!s_pDevice)
         return;
 
-    float w = static_cast<float>(s_backbufferWidth);
-    float h = static_cast<float>(s_backbufferHeight);
+    // Destination rect: full backbuffer, or the centered aspect-fit rect
+    // when maintas is on (getPresentRect). The bars around a letterboxed
+    // quad stay the frame's black Clear.
+    int rx, ry, rw, rh;
+    getPresentRect(rx, ry, rw, rh);
+    const float x0 = (float)rx - 0.5f;
+    const float y0 = (float)ry - 0.5f;
+    const float x1 = (float)(rx + rw) - 0.5f;
+    const float y1 = (float)(ry + rh) - 0.5f;
 
-    // Pixel-perfect fullscreen quad
+    // Pixel-perfect quad
     ScreenVertex verts[4] =
     {
-        { -0.5f,     -0.5f,     0.0f, 1.0f,   0.0f, 0.0f },
-        { w - 0.5f,  -0.5f,     0.0f, 1.0f,   1.0f, 0.0f },
-        { -0.5f,     h - 0.5f,  0.0f, 1.0f,   0.0f, 1.0f },
-        { w - 0.5f,  h - 0.5f,  0.0f, 1.0f,   1.0f, 1.0f },
+        { x0,  y0,  0.0f, 1.0f,   0.0f, 0.0f },
+        { x1,  y0,  0.0f, 1.0f,   1.0f, 0.0f },
+        { x0,  y1,  0.0f, 1.0f,   0.0f, 1.0f },
+        { x1,  y1,  0.0f, 1.0f,   1.0f, 1.0f },
     };
 
     // Set minimal render state for the framebuffer quad

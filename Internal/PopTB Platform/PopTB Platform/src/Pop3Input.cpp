@@ -2,6 +2,7 @@
 #include "Pop3Input.h"
 #include "Pop3App.h"
 #include "Pop3Debug.h"
+#include "Pop3Screen.h"
 #include "SDL.h"
 
 #define GET_X_LPARAM(lp)                        ((int)(short)LOWORD(lp))
@@ -323,9 +324,29 @@ Pop3Result Pop3Input::ProcessEvent(Pop3WindowHandle hwnd, UINT msg, Pop3WParam w
     case WM_MOUSEMOVE:
         if (_UseWindowsMessages)
         {
-            // Update Pointer Position
-            _mousePos.X = GET_X_LPARAM(lParam);
-            _mousePos.Y = GET_Y_LPARAM(lParam);
+            // Update Pointer Position. WM_MOUSEMOVE delivers window CLIENT
+            // pixels, but the game cursor lives in FRAMEBUFFER (game logical
+            // resolution) space - map through the present rect so a scaled
+            // window and/or the maintas letterbox (Pop3Screen::getPresentRect)
+            // keep the cursor aligned with what is under it. Historically this
+            // path used the raw client pixels, which was only correct at 1:1
+            // window scale (Legacy Mouse Mode on a resized window drifted).
+            {
+                int clientX = GET_X_LPARAM(lParam);
+                int clientY = GET_Y_LPARAM(lParam);
+                int prX, prY, prW, prH;
+                Pop3Screen::getPresentRect(prX, prY, prW, prH);
+                if (prW > 0 && prH > 0 && *_ptrs.ScreenW > 0 && *_ptrs.ScreenH > 0)
+                {
+                    _mousePos.X = (int)(((long long)(clientX - prX) * (long long)*_ptrs.ScreenW) / prW);
+                    _mousePos.Y = (int)(((long long)(clientY - prY) * (long long)*_ptrs.ScreenH) / prH);
+                }
+                else
+                {
+                    _mousePos.X = clientX;
+                    _mousePos.Y = clientY;
+                }
+            }
 
             // Check mouse coords. Clamp to the LAST valid pixel (ScreenW-1 /
             // ScreenH-1); clamping to ScreenW/ScreenH parks the cursor one pixel

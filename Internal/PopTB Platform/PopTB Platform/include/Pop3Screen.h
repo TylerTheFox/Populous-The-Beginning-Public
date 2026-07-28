@@ -153,6 +153,29 @@ public:
     // presentation interval. Default keeps prior behavior (vsync on).
     static void setPresentMode(bool vsync, int maxFps);
 
+    // Runtime variant of setPresentMode: if the presentation interval
+    // actually changes while the device is live, Reset the device so the
+    // new interval takes effect (Reset-grade: MANAGED textures + shaders
+    // survive; the deinit/init callbacks fire around it exactly like
+    // matchWindowSizeToBackbuffer). NEVER call from inside the overlay
+    // callback or an ImGui draw fn - the deinit callback tears ImGui down.
+    static void applyPresentMode(bool vsync, int maxFps);
+
+    // ddraw.ini `maintas` (maintain aspect ratio): letterbox the SW
+    // framebuffer quad to the framebuffer's own aspect, centered in the
+    // backbuffer, instead of stretching it to fill. The bars are the
+    // regular black Clear. Safe to flip at runtime - the dest rect is
+    // recomputed every frame (no device Reset involved).
+    static void setMaintainAspect(bool on);
+    static bool maintainAspect();
+
+    // The framebuffer's destination rect inside the backbuffer, i.e. where
+    // drawFramebufferQuad will place the SW image this frame. Full
+    // backbuffer unless maintas is on and the aspects differ. HW geometry
+    // scaling (HwRender renderScale/renderOffset) and absolute-mouse
+    // mapping must use this same rect so world, UI and cursor stay aligned.
+    static void getPresentRect(int& x, int& y, int& w, int& h);
+
     // LOCAL-ONLY frame-timing diagnostic (QueryPerformanceCounter). Values
     // are the last-1s rolling average in ms; fps is 1000/frameTotal. Never
     // feed these into the deterministic sim.
@@ -183,6 +206,7 @@ private:
     static bool                 s_debugBackbufferPink; // Phase 8.5 #12c diag
     static bool                 s_vsync;          // present interval (config)
     static int                  s_maxFps;         // CPU frame cap, 0 = off
+    static bool                 s_maintas;        // letterbox to fb aspect (ddraw.ini maintas)
     // GPU palette-lookup path (offloads the per-frame CPU convert).
     static IDirect3DTexture9*      s_pIndexTex;    // L8 indices
     static IDirect3DTexture9*      s_pPaletteTex;  // 256x1 RGBA LUT

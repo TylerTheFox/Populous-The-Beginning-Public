@@ -398,6 +398,16 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
     _InitialiseSurface(&_lbFrontSurface, nWidth, nHeight, nDepth, flags);
     _InitialiseSurface(&_lbBackSurface, nWidth, nHeight, nDepth, flags);
 
+    // Leaving exclusive at runtime (Display settings window): destroy the
+    // exclusive device BEFORE the window styling below - destroying it
+    // restores the desktop display mode, so the GetSystemMetrics calls in
+    // the borderless/windowed branches size against the real desktop rather
+    // than the still-active exclusive game resolution (which made a restored
+    // window integer-scale against a 640x480 "desktop"). The create path
+    // further down sees !isReady and builds the windowed device fresh.
+    if (Pop3Screen::isReady() && windowed && !Pop3Screen::isWindowed())
+        Pop3Screen::destroy();
+
     // Create D3D9 device via Pop3Screen. `windowed` / `borderless` were
     // resolved from the flags above (near the availability gate).
     // Adjust window style: borderless vs bordered-window vs exclusive
@@ -460,11 +470,14 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
             return LB_ERROR;
         }
     }
-    else if (!windowed)
+    else if (!windowed || !Pop3Screen::isWindowed())
     {
-        // Exclusive-mode resolution change: destroy and recreate the D3D9
-        // device so it acquires the new display mode and backbuffer size.
-        // Windowed/borderless resolution changes are handled lazily on the
+        // Exclusive-mode resolution change - or a runtime transition where
+        // the device's windowed-ness itself flips (windowed/borderless ->
+        // exclusive, or exclusive -> windowed/borderless from the Display
+        // settings window): destroy and recreate the D3D9 device so it
+        // acquires (or releases) the display mode and backbuffer size.
+        // Same-windowed-ness resolution changes are handled lazily on the
         // next present() call via matchWindowSizeToBackbuffer (which detects
         // the window client-rect change and Resets the windowed device).
         Pop3Screen::destroy();
