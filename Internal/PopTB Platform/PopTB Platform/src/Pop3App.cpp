@@ -266,9 +266,37 @@ Pop3WindowHandle Pop3App::getHwnd()
 // other windows, the taskbar, etc. Called from WM_SETFOCUS / WA_ACTIVE /
 // WM_SIZE / WM_MOVE below. No-op in fullscreen (the clip would cover the
 // whole monitor anyway) and on minimised windows (zero-size client rect).
+static bool _cursorClipped = false;
+
+// The _active flag is optimistic: it starts TRUE before any activation
+// message arrives, and WM_SIZE/SIZE_RESTORED sets it during the window's own
+// background setup. A game launched behind another window therefore believed
+// it was active and trapped the cursor in its not-yet-sized client rect until
+// the user alt-tabbed in and out (an alt-tab OUT is what finally delivered a
+// real WA_INACTIVE). The foreground window is the ground truth - ask the OS.
+static bool cursorClipAllowed(HWND hWnd)
+{
+    if (!hWnd || IsIconic(hWnd)) return false;
+    const HWND fg = GetForegroundWindow();
+    return fg == hWnd || (fg && GetAncestor(fg, GA_ROOT) == hWnd);
+}
+
+static void releaseCursorClip()
+{
+    ClipCursor(nullptr);
+    _cursorClipped = false;
+}
+
 static void clipCursorToClientRect(HWND hWnd)
 {
-    if (!hWnd || IsIconic(hWnd)) return;
+    if (!cursorClipAllowed(hWnd))
+    {
+        // Self-healing: if we clipped and then lost the foreground without a
+        // message we would otherwise hold the cursor hostage.
+        if (_cursorClipped)
+            releaseCursorClip();
+        return;
+    }
     RECT rc;
     if (!GetClientRect(hWnd, &rc)) return;
     POINT tl = { rc.left, rc.top };
@@ -278,11 +306,7 @@ static void clipCursorToClientRect(HWND hWnd)
     if (br.x <= tl.x || br.y <= tl.y) return;
     RECT screenRc = { tl.x, tl.y, br.x, br.y };
     ClipCursor(&screenRc);
-}
-
-static void releaseCursorClip()
-{
-    ClipCursor(nullptr);
+    _cursorClipped = true;
 }
 
 // True while the user is dragging the title bar or resizing the window
@@ -296,8 +320,11 @@ static bool _inSizeMove = false;
 // and must never fire after WM_CLOSE released the clip for shutdown.
 static void reassertCursorClip()
 {
-    if (Pop3App::isActive() && !_inSizeMove && !Pop3App::isQuitting())
-        clipCursorToClientRect((HWND)Pop3App::getHwnd());
+    if (_inSizeMove || Pop3App::isQuitting())
+        return;
+    // Not gated on isActive(): clipCursorToClientRect decides from the real
+    // foreground state and releases a stale clip when we are not foreground.
+    clipCursorToClientRect((HWND)Pop3App::getHwnd());
 }
 
 // Ticket 0000712: the game layer is linked into this same executable, so
