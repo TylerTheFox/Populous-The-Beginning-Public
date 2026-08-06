@@ -477,6 +477,17 @@ TbError LbScreen_SetMode(UINT nWidth, UINT nHeight, UINT nDepth, ULONG flags, co
         }
     }
 
+    // Latch the mode we actually applied. Placed AFTER the create/recreate
+    // block so it wins on every path: the recreate paths ran create() (which
+    // derives border from borderless alone and drops NO_BORDER), and the
+    // windowed<->borderless path recreates nothing at all yet still restyled
+    // the window above. Without this, isFullscreen()/hasBorder() keep
+    // describing the PREVIOUS mode and both readers of the live state get it
+    // wrong: host_change_res's flag derivation and DDrawConfig's ini
+    // write-back (0002572).
+    Pop3Screen::setWindowModeState(windowed, borderless,
+                                   (flags & LB_SCREEN_MODE_NO_BORDER) == 0);
+
     Pop3Size size;
     size.Width = nWidth;
     size.Height = nHeight;

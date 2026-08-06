@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <d3dx9.h>
 #include <cstring>
+#include <cstdio>
 #include "../../../../Tracy.h"
 #include "../../../../TracyWin.h"
 
@@ -37,6 +38,10 @@ int                 Pop3Screen::s_framebufferHeight   = 0;
 bool                Pop3Screen::s_windowed            = true;
 bool                Pop3Screen::s_fullscreen          = false;
 bool                Pop3Screen::s_border              = true;
+// The user's windowed border PREFERENCE, distinct from the border the window
+// happens to have right now: an Alt+Enter round trip must come back to the
+// style the user configured, not to a hardcoded bordered window.
+bool                Pop3Screen::s_borderPref          = true;
 bool                Pop3Screen::s_ready               = false;
 bool                Pop3Screen::s_hwComposite         = false;
 bool                Pop3Screen::s_debugBackbufferPink = false;
@@ -51,6 +56,28 @@ int                 Pop3Screen::s_indexTexW           = 0;
 int                 Pop3Screen::s_indexTexH           = 0;
 bool                Pop3Screen::s_gpuPalette          = true;
 bool                Pop3Screen::s_gpuActiveFrame      = false;
+// ---------------------------------------------------------------
+//  Device identity latch (telemetry)
+//
+//  D3DADAPTER_IDENTIFIER9 is owned by s_pD3D, which destroy() releases,
+//  and the vertex-processing mode is a local in createDevice. The
+//  diagnostics report is built after teardown, so sample once here and
+//  report the copy - the same rule the am_i_host field learned.
+//  Written only in createDevice (boot / device rebuild), read only by the
+//  accessors. Display-only: never read by the sim.
+// ---------------------------------------------------------------
+namespace {
+    char         _id_adapterDesc[MAX_DEVICE_IDENTIFIER_STRING]   = { 0 };
+    char         _id_adapterDriver[MAX_DEVICE_IDENTIFIER_STRING] = { 0 };
+    char         _id_driverVersion[40]                           = { 0 };
+    unsigned int _id_vendorId    = 0;
+    unsigned int _id_deviceId    = 0;
+    unsigned int _id_subSysId    = 0;
+    unsigned int _id_maxTexW     = 0;
+    unsigned int _id_maxTexH     = 0;
+    unsigned int _id_availTexMem = 0;   // bytes, sampled right after create
+    int          _id_vpMode      = -1;  // 2=HW 1=MIXED 0=SW, -1 = never created
+}
 
 // ---------------------------------------------------------------
 //  Frame-timing introspection (LOCAL-ONLY; QueryPerformanceCounter).
@@ -197,6 +224,21 @@ void Pop3Screen::getFrameTimingMs(double& convertUpload, double& hwDraw,
     frameTotal    = _pp_avgFrame;
     fps           = _pp_avgFps;
 }
+// Device identity latch readers - see the latch block near the top of this
+// file. All valid after destroy(); "" / 0 / -1 before the first createDevice.
+const char*  Pop3Screen::adapterDescription()        { return _id_adapterDesc; }
+const char*  Pop3Screen::adapterDriver()             { return _id_adapterDriver; }
+const char*  Pop3Screen::adapterDriverVersion()      { return _id_driverVersion; }
+unsigned int Pop3Screen::adapterVendorId()           { return _id_vendorId; }
+unsigned int Pop3Screen::adapterDeviceId()           { return _id_deviceId; }
+unsigned int Pop3Screen::adapterSubSysId()           { return _id_subSysId; }
+unsigned int Pop3Screen::deviceMaxTextureWidth()     { return _id_maxTexW; }
+unsigned int Pop3Screen::deviceMaxTextureHeight()    { return _id_maxTexH; }
+unsigned int Pop3Screen::availableTextureMemAtInit() { return _id_availTexMem; }
+int          Pop3Screen::vertexProcessingMode()      { return _id_vpMode; }
+
+bool Pop3Screen::presentVsync()  { return s_vsync; }
+int  Pop3Screen::presentMaxFps() { return s_maxFps; }
 
 void Pop3Screen::setHwCompositeActive(bool on) { s_hwComposite = on; }
 bool Pop3Screen::hwCompositeActive()           { return s_hwComposite; }
@@ -350,9 +392,16 @@ bool Pop3Screen::createDevice()
     }
     if (SUCCEEDED(hr))
     {
+
         Pop3Debug::trace("Pop3Screen: vertex processing mode = %s",
             behaviour == D3DCREATE_HARDWARE_VERTEXPROCESSING ? "hardware" :
             behaviour == D3DCREATE_MIXED_VERTEXPROCESSING ? "mixed" : "software");
+        // Latch (see the device-identity block near the top of this file):
+        // `behaviour` dies with this call and GetAvailableTextureMem needs a
+        // live device, but diagnostics run long after teardown.
+        _id_vpMode = (behaviour == D3DCREATE_HARDWARE_VERTEXPROCESSING) ? 2
+                   : (behaviour == D3DCREATE_MIXED_VERTEXPROCESSING)    ? 1 : 0;
+        _id_availTexMem = s_pDevice->GetAvailableTextureMem();
 
         // 0002585: one-time device caps dump so a user log shows POW2 support,
         // max texture size and adapter - needed to interpret HwTexture::create
@@ -360,16 +409,41 @@ bool Pop3Screen::createDevice()
         D3DCAPS9 devCaps;
         if (SUCCEEDED(s_pDevice->GetDeviceCaps(&devCaps)))
         {
+            _id_maxTexW = (unsigned int)devCaps.MaxTextureWidth;
+            _id_maxTexH = (unsigned int)devCaps.MaxTextureHeight;
+
             D3DADAPTER_IDENTIFIER9 adapterId;
-            const char* adapter =
-                SUCCEEDED(s_pD3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapterId))
-                    ? adapterId.Description : "?";
+            const char* adapter = "?";
+            if (SUCCEEDED(s_pD3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapterId)))
+            {
+                adapter = adapterId.Description;
+                // Latch the whole identifier: s_pD3D is Release()d in
+                // destroy() and the diagnostics report is built after that.
+                strncpy(_id_adapterDesc, adapterId.Description, sizeof(_id_adapterDesc) - 1);
+                _id_adapterDesc[sizeof(_id_adapterDesc) - 1] = '\0';
+                strncpy(_id_adapterDriver, adapterId.Driver, sizeof(_id_adapterDriver) - 1);
+                _id_adapterDriver[sizeof(_id_adapterDriver) - 1] = '\0';
+                _id_vendorId = (unsigned int)adapterId.VendorId;
+                _id_deviceId = (unsigned int)adapterId.DeviceId;
+                _id_subSysId = (unsigned int)adapterId.SubSysId;
+                // DriverVersion is the usual packed
+                // product.version.subversion.build QWORD.
+                _snprintf_s(_id_driverVersion, sizeof(_id_driverVersion), _TRUNCATE,
+                            "%u.%u.%u.%u",
+                            (unsigned int)HIWORD(adapterId.DriverVersion.HighPart),
+                            (unsigned int)LOWORD(adapterId.DriverVersion.HighPart),
+                            (unsigned int)HIWORD(adapterId.DriverVersion.LowPart),
+                            (unsigned int)LOWORD(adapterId.DriverVersion.LowPart));
+            }
             Pop3Debug::trace(
-                "Pop3Screen: device caps - adapter='%s' maxTex=%lux%lu POW2=%d NONPOW2COND=%d",
-                adapter,
+                "Pop3Screen: device caps - adapter='%s' vendor=0x%04X device=0x%04X drv=%s "
+                "maxTex=%lux%lu POW2=%d NONPOW2COND=%d vram_est=%uMB",
+                adapter, _id_vendorId, _id_deviceId,
+                _id_driverVersion[0] ? _id_driverVersion : "?",
                 devCaps.MaxTextureWidth, devCaps.MaxTextureHeight,
                 (devCaps.TextureCaps & D3DPTEXTURECAPS_POW2) ? 1 : 0,
-                (devCaps.TextureCaps & D3DPTEXTURECAPS_NONPOW2CONDITIONAL) ? 1 : 0);
+                (devCaps.TextureCaps & D3DPTEXTURECAPS_NONPOW2CONDITIONAL) ? 1 : 0,
+                _id_availTexMem >> 20);
         }
     }
 
@@ -902,6 +976,7 @@ IDirect3DDevice9* Pop3Screen::getDevice()
     return s_pDevice;
 }
 
+
 // ---------------------------------------------------------------
 //  Display state
 // ---------------------------------------------------------------
@@ -924,7 +999,7 @@ void Pop3Screen::toggleFullscreen()
 
     if (!s_fullscreen)
     {
-        DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+        DWORD style = (s_borderPref ? WS_OVERLAPPEDWINDOW : WS_POPUP) | WS_VISIBLE;
         SetWindowLongPtr(hWnd, GWL_STYLE, style);
 
         // Scale the game up to a comfortable integer multiple that fits
@@ -947,7 +1022,7 @@ void Pop3Screen::toggleFullscreen()
         SetWindowPos(hWnd, HWND_NOTOPMOST,
             (deskW - winW) / 2, (deskH - winH) / 2, winW, winH,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        s_border = true;
+        s_border = s_borderPref;
 
         // Re-take the backbuffer from the REAL client rect now; waiting
         // for matchWindowSizeToBackbuffer next frame would present the
@@ -1023,6 +1098,23 @@ void Pop3Screen::toggleFullscreen()
     // device; fires for both the Reset and the rebuild fallback).
     if (s_deviceInitCallback)
         s_deviceInitCallback();
+}
+
+void Pop3Screen::setWindowModeState(bool windowed, bool borderless, bool border)
+{
+    // Same derivation as create(): "fullscreen" covers exclusive AND
+    // borderless. Unlike create() the caller's border request is honored -
+    // create() only sees (windowed, borderless) and cannot see
+    // LB_SCREEN_MODE_NO_BORDER, so a border=false window used to report
+    // hasBorder()==true and host_change_res re-added the frame.
+    s_windowed   = windowed;
+    s_fullscreen = !windowed || borderless;
+    s_border     = windowed && !borderless && border;
+    // Only a genuine windowed mode expresses a border preference; the
+    // borderless/exclusive states say nothing about what the user wants when
+    // they come back to a window.
+    if (windowed && !borderless)
+        s_borderPref = border;
 }
 
 int Pop3Screen::getRenderWidth()

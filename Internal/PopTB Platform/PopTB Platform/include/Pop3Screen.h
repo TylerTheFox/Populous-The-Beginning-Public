@@ -92,6 +92,13 @@ public:
     // desktop-size WS_POPUP window over a WINDOWED device). This toggle
     // never requests an exclusive device - see toggleFullscreen().
     static void toggleFullscreen();
+    // Record a window-mode change performed OUTSIDE Pop3Screen.
+    // LbScreen_SetMode restyles the window itself and only recreates the
+    // device when windowed-ness flips, so windowed<->borderless and border
+    // changes would otherwise leave these flags stale and isFullscreen() /
+    // hasBorder() would describe the previous mode. Pure state: touches no
+    // device, no window, no backbuffer.
+    static void setWindowModeState(bool windowed, bool borderless, bool border);
 
     // Current render dimensions (output/window size after upscale).
     static int getRenderWidth();
@@ -178,6 +185,39 @@ public:
     // feed these into the deterministic sim.
     static void getFrameTimingMs(double& convertUpload, double& hwDraw,
                                  double& present, double& frameTotal, double& fps);
+    // ---------------------------------------------------------------
+    //  Device identity latch (telemetry)
+    // ---------------------------------------------------------------
+
+    // Snapshot of D3DADAPTER_IDENTIFIER9 + the vertex-processing mode the
+    // HWVP -> MIXED -> SWVP ladder settled on, taken inside createDevice and
+    // KEPT after teardown. destroy() Release()s the IDirect3D9 that owns the
+    // identifier and the mode is only a local in createDevice, while the
+    // diagnostics report is built after the renderer has already been torn
+    // down - so these must be latched, not queried on demand.
+    // Strings are never null; "" until the first successful createDevice.
+    static const char*  adapterDescription();
+    static const char*  adapterDriver();          // e.g. "nvldumd.dll"
+    static const char*  adapterDriverVersion();   // "a.b.c.d", "" if unknown
+    static unsigned int adapterVendorId();        // 0x8086 Intel, 0x1414 MS basic/WARP
+    static unsigned int adapterDeviceId();
+    static unsigned int adapterSubSysId();
+    static unsigned int deviceMaxTextureWidth();
+    static unsigned int deviceMaxTextureHeight();
+    // IDirect3DDevice9::GetAvailableTextureMem() sampled once, immediately
+    // after the device was created. BYTES, and a driver ESTIMATE - it can
+    // saturate on cards with >4 GiB. 0 = unknown / no device.
+    static unsigned int availableTextureMemAtInit();
+    // 2 = D3DCREATE_HARDWARE_VERTEXPROCESSING, 1 = MIXED, 0 = SOFTWARE,
+    // -1 = no device was ever created.
+    static int          vertexProcessingMode();
+
+    // Present-mode settings currently latched into the device
+    // (setPresentMode / applyPresentMode). Plain statics, valid after
+    // teardown. vsync on == D3DPRESENT_INTERVAL_ONE.
+    static bool presentVsync();
+    static int  presentMaxFps();
+
 
 private:
     static IDirect3D9*          s_pD3D;
@@ -198,6 +238,7 @@ private:
     static bool                 s_windowed;
     static bool                 s_fullscreen;
     static bool                 s_border;
+    static bool                 s_borderPref;   // windowed border PREFERENCE
     static bool                 s_ready;
     static bool                 s_hwComposite;    // HW composite-order flip
     static bool                 s_debugBackbufferPink; // magenta-clear diagnostic
