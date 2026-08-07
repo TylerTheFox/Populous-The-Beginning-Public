@@ -1,4 +1,5 @@
 #include "Pop3Platform_Win32.h"
+#include "../../../../Tracy.h"   // net stall diagnosis zones (no-op when CM_TRACY==0)
 #include "Pop3NetworkUDP.h"
 #include "Pop3Debug.h"
 #include "Pop3App.h"
@@ -168,6 +169,7 @@ void Pop3NetworkUDP::handle_lobby_frame(const char* buf, DWORD len, const Poco::
 // which is fine; the next keepalive re-registers regardless.
 void Pop3NetworkUDP::lobby_registration_tick()
 {
+    ZoneScopedN("net.lobbyreg_tick");
     // Step B: apply a queued reconnect re-registration (game -> net) before
     // anything else - switch the keepalive to the freshly re-created lobby and
     // reset both liveness clocks so we don't immediately re-flag loss.
@@ -433,6 +435,7 @@ void Pop3NetworkUDP::RunServer()
 
 void Pop3NetworkUDP::Send(int to_pn, const char * peer_address, UWORD peer_port, Pop3NetworkTypes type, const char * buffer, DWORD buf_size) const
 {
+    ZoneScopedN("net.udp_send");
     try
     {
         if (peer_address[0] == 0 || peer_port == 0) return;

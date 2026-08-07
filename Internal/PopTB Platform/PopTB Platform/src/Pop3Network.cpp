@@ -1,4 +1,5 @@
 #include    "Pop3Network.h"
+#include "../../../../Tracy.h"   // net stall diagnosis zones (no-op when CM_TRACY==0)
 #include    "Pop3Debug.h"
 #include    "../../../../version.h"
 #include    "Pop3Debug.h"
@@ -231,6 +232,7 @@ BOOL Pop3Network::GetPlayerInfo(POP3NETWORK_PLAYERINFO * out_player)
         out_player[i].dwFlags = 0;
     }
 
+    ZoneScopedN("net.get_playerinfo");
     Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
@@ -1901,6 +1903,7 @@ void Pop3Network::Send(int to_id, Pop3NetworkTypes type)
 
 void Pop3Network::Send(int to_id, Pop3NetworkTypes type, const char * buffer, DWORD buf_size)
 {
+    ZoneScopedN("net.roster_send");
     Poco::Mutex::ScopedLock lock(players_mu);
     for (auto& player : players)
     {
